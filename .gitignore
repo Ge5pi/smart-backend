@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Pytest and coverage
+.coverage
+*.cover
+htmlcov/
+.tox/
+nosetests.xml
+test-results/
+.cache/
+
+# Alembic
+alembic/versions/*.pyc
+alembic/versions/__pycache__/
+
+# Logs and dumps
+*.log
+*.sql
+*.sqlite3
+*.db
+
+# Environment files
+.env
+.env.*
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
