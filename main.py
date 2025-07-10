@@ -79,10 +79,15 @@ INDEX_NAME = "soda-index"
 BATCH_SIZE = 100
 
 user_router = APIRouter()
+origins=[
+    "https://smart-frontend-production.up.railway.app",
+    "http://localhost:5173",
+],
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 if INDEX_NAME not in pc.list_indexes().names():
