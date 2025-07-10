@@ -79,11 +79,10 @@ INDEX_NAME = "soda-index"
 BATCH_SIZE = 100
 
 user_router = APIRouter()
-origins=[
+origins = [
     "https://smart-frontend-production.up.railway.app",
     "http://localhost:5173",
-],
-
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -880,5 +879,6 @@ async def get_paginated_preview(
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
