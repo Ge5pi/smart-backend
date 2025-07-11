@@ -16,8 +16,7 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Redis
-REDIS_HOST = os.getenv("REDIS_HOST")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_URL = os.getenv("REDIS_URL")
 
 # Application
 SECRET_KEY = os.getenv("SECRET_KEY")

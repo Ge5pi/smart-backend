@@ -44,12 +44,7 @@ try:
         region_name=config.AWS_DEFAULT_REGION
     )
 
-    redis_client = redis.Redis(
-        host=config.REDIS_HOST,
-        port=config.REDIS_PORT,
-        decode_responses=True,
-        socket_connect_timeout=5
-    )
+    redis_client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=5)
     redis_client.ping()
     print("--- Successfully connected to Redis ---")
 
