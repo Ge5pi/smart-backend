@@ -27,5 +27,5 @@ PINECONE_KEY = os.getenv("PINECONE_API_KEY")
 
 
 # Проверка, что ключевые переменные установлены
-if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, DATABASE_URL, SECRET_KEY, S3_BUCKET_NAME, REDIS_HOST]):
+if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, DATABASE_URL, SECRET_KEY, S3_BUCKET_NAME, REDIS_URL]):
     raise ValueError("Одна или несколько ключевых переменных окружения не установлены. Проверьте .env файл.")
