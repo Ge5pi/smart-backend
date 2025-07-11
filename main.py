@@ -32,7 +32,6 @@ import models
 import schemas
 from config import API_KEY, PINECONE_KEY
 
-
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
 
@@ -88,6 +87,8 @@ user_router = APIRouter()
 origins = [
     "https://smart-frontend-production.up.railway.app",
     "http://localhost:5173",
+    "https://soda.contact",
+    "https://www.soda.contact",
 ]
 
 app.add_middleware(
