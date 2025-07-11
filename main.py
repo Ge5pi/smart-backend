@@ -44,8 +44,7 @@ try:
         region_name=config.AWS_DEFAULT_REGION
     )
 
-    redis_client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=5)
-    redis_client.ping()
+    redis_client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=15)
     print("--- Successfully connected to Redis ---")
 
 except Exception as e:
@@ -60,6 +59,18 @@ LANG_MAP = {
 client = openai.OpenAI(api_key=api_key)
 pc = pinecone.Pinecone(api_key=pinecone_key)
 app = FastAPI(title="SODA API")
+
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        if redis_client:
+            redis_client.ping()
+            print("✅ Redis connected successfully")
+        else:
+            print("⚠️ Redis was not initialized")
+    except Exception as e:
+        print(f"❌ Redis ping failed: {e}")
 
 
 @app.get("/health", tags=["System"])
