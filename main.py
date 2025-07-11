@@ -11,7 +11,6 @@ import openai
 import pandas as pd
 import pinecone
 import redis
-import torch
 from langdetect import detect, LangDetectException
 from fastapi import APIRouter
 from fastapi import Depends
@@ -37,10 +36,6 @@ from config import API_KEY, PINECONE_KEY
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
 
-
-tabpfn_classifier = None
-tabpfn_regressor = None
-
 try:
     s3_client = boto3.client(
         's3',
@@ -54,11 +49,6 @@ try:
 
 except Exception as e:
     print(f"FATAL: Could not connect to AWS or Redis on startup. Error: {e}")
-
-from threading import Lock
-
-df_cache: dict[str, pd.DataFrame] = {}
-df_cache_lock = Lock()
 
 LANG_MAP = {
     'ru': 'русском',
@@ -117,10 +107,6 @@ def allowed_file(filename):
 
 
 def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
-    with df_cache_lock:
-        if file_id in df_cache:
-            return df_cache[file_id]
-
     file_record = crud.get_file_by_uid(db, file_id)
     if not file_record:
         raise HTTPException(status_code=404, detail="File record not found in DB.")
@@ -131,16 +117,11 @@ def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
 
         file_extension = Path(file_record.file_name).suffix.lower()
         if file_extension == '.csv':
-            df = pd.read_csv(file_content)
+            return pd.read_csv(file_content)
         elif file_extension in ['.xlsx', '.xls']:
-            df = pd.read_excel(file_content)
+            return pd.read_excel(file_content)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type in S3.")
-
-        with df_cache_lock:
-            df_cache[file_id] = df
-
-        return df
 
     except Exception as e:
         print(f"Error reading file from S3: {e}")
@@ -206,77 +187,93 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
     return [r.embedding for r in response.data]
 
 
-def impute_missing_values_with_tabpfn_optimized(df: pd.DataFrame, target_column: str, max_samples: int = 50):
-    global tabpfn_classifier, tabpfn_regressor
+def impute_missing_values_with_tabpfn(df: pd.DataFrame, target_column: str, max_samples: int = 50) -> tuple:
+    df_work = df.copy()
+    original_series = df_work[target_column].copy()
 
-    original_series = df[target_column]
+    # 1. Проверка на наличие пропусков
+    if not df_work[target_column].isna().any():
+        return ("no_action", "В столбце нет пропущенных значений.", original_series)
 
-    if not original_series.isna().any():
-        return "no_action", "В столбце нет пропущенных значений.", original_series
+    # 2. Разделение данных
+    mask_missing = df_work[target_column].isna()
+    df_complete = df_work[~mask_missing]
+    df_missing = df_work[mask_missing]
 
-    mask_missing = original_series.isna()
-    df_complete = df.loc[~mask_missing]
-    df_missing = df.loc[mask_missing]
+    if len(df_complete) == 0:
+        return ("skipped", "Нет полных данных для обучения модели.", original_series)
 
-    if df_complete.empty:
-        return "skipped", "Нет полных данных для обучения модели.", original_series
-
+    # Ограничение выборки для производительности
     if len(df_complete) > max_samples:
         df_complete = df_complete.sample(n=max_samples, random_state=42)
 
-    feature_columns = [col for col in df.columns if col != target_column]
-    useful_features = [
-        col for col in feature_columns
-        if df_complete[col].isna().sum() / len(df_complete) <= 0.5 and df_complete[col].nunique() <= 100
-    ]
+    # 3. Выбор признаков для обучения
+    feature_columns = [col for col in df_work.columns if col != target_column]
+    useful_features = []
+    for col in feature_columns:
+        # Пропускаем столбцы с большим количеством пропусков или высокой кардинальностью
+        if df_complete[col].isna().sum() / len(df_complete) > 0.5 or df_complete[col].nunique() > 100:
+            continue
+        useful_features.append(col)
 
     if not useful_features:
-        return "skipped", "Не найдено подходящих признаков для обучения.", original_series
+        return ("skipped", "Не найдено подходящих признаков для обучения.", original_series)
 
+    # 4. Подготовка данных для модели
     X_train = df_complete[useful_features].copy()
-    y_train = df_complete[target_column]
+    y_train = df_complete[target_column].copy()
     X_predict = df_missing[useful_features].copy()
 
+    # Предобработка признаков
     for col in useful_features:
         if X_train[col].dtype == 'object':
             le = LabelEncoder()
-            X_train[col].fillna('missing', inplace=True)
-            X_predict[col].fillna('missing', inplace=True)
-            le.fit(pd.concat([X_train[col], X_predict[col]]))
+            # Заполняем пропуски в признаках как отдельную категорию
+            X_train[col] = X_train[col].fillna('missing')
+            X_predict[col] = X_predict[col].fillna('missing')
+
+            all_values = pd.concat([X_train[col], X_predict[col]]).unique()
+            le.fit(all_values)
+
             X_train[col] = le.transform(X_train[col])
             X_predict[col] = le.transform(X_predict[col])
-        else:
+        elif pd.api.types.is_numeric_dtype(X_train[col]):
             median_val = X_train[col].median()
-            X_train[col].fillna(median_val, inplace=True)
-            X_predict[col].fillna(median_val, inplace=True)
+            X_train[col] = X_train[col].fillna(median_val)
+            X_predict[col] = X_predict[col].fillna(median_val)
 
+    # 5. Обучение модели и предсказание
     try:
-        is_classification = pd.api.types.is_object_dtype(y_train) or y_train.nunique() < 20
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Решаем, использовать классификатор или регрессор
+        is_classification = pd.api.types.is_object_dtype(y_train.dtype) or y_train.nunique() < 20
 
         if is_classification:
-            if tabpfn_classifier is None:
-                tabpfn_classifier = TabPFNClassifier(device=device)
-            model = tabpfn_classifier
+            model = TabPFNClassifier(device='cpu')
             le_target = LabelEncoder()
             y_train_encoded = le_target.fit_transform(y_train.astype(str))
-            model.fit(X_train.to_numpy(), y_train_encoded)
-            predictions_encoded = model.predict(X_predict.to_numpy())
-            predictions = le_target.inverse_transform(predictions_encoded)
-        else:
-            if tabpfn_regressor is None:
-                tabpfn_regressor = TabPFNRegressor(device=device)
-            model = tabpfn_regressor
-            model.fit(X_train.to_numpy(), y_train.to_numpy())
-            predictions = model.predict(X_predict.to_numpy())
 
-        result = original_series.copy()
-        result.iloc[mask_missing.values] = predictions
+            model.fit(X_train, y_train_encoded)
+            predictions_encoded = model.predict(X_predict)
+            predictions = le_target.inverse_transform(predictions_encoded)
+
+            # Попытка вернуть исходный тип данных, если он был числовым
+            if not pd.api.types.is_object_dtype(y_train.dtype):
+                predictions = pd.Series(predictions).astype(y_train.dtype).values
+        else:
+            model = TabPFNRegressor(device='cpu')
+            model.fit(X_train, y_train)
+            predictions = model.predict(X_predict)
+            # Приведение к исходному типу данных
+            predictions = pd.Series(predictions).astype(y_train.dtype).values
+
+        result = df_work[target_column].copy()
+        result.loc[mask_missing] = predictions
+
         return "success", "Пропуски успешно заполнены.", result
 
     except Exception as e:
-        print(f"TabPFN imputation error in column '{target_column}': {e}")
-        return "error", str(e), original_series
+        print(f"ERROR during TabPFN imputation for column '{target_column}': {e}")
+        return "error", "Количество классов в столбце слишком большое", original_series
 
 
 def get_critic_evaluation(query: str, answer: str) -> dict:
@@ -532,8 +529,6 @@ async def upload_file(
     analysis = [{"column": col, "dtype": str(df[col].dtype), "nulls": int(df[col].isna().sum()),
                  "unique": int(df[col].nunique())} for col in df.columns]
     preview_data = df.fillna("null").to_dict(orient="records")
-    with df_cache_lock:
-        df_cache.pop(file_id, None)
     return {"columns": analysis, "preview": preview_data, "file_id": file_id, "file_name": original_filename}
 
 
@@ -643,6 +638,7 @@ async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.g
 @app.post("/impute-missing/", tags=["Data Cleaning"])
 async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                          db: Session = Depends(database.get_db)):
+    """Заполняет пропуски в данных и сохраняет измененный файл обратно в S3."""
     df = get_df_from_s3(db, file_id)
 
     if not columns:
@@ -653,22 +649,25 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
         raise HTTPException(status_code=400, detail="Invalid columns format.")
 
     df_imputed = df.copy()
-    final_results = {}
+    final_processing_results, final_missing_before, final_missing_after = {}, {}, {}
 
     for col in selected_columns:
         if col not in df.columns:
-            final_results[col] = {"message": "Ошибка: Столбец не найден", "missing_before": "N/A", "missing_after": "N/A"}
+            final_processing_results[col], final_missing_before[col], final_missing_after[
+                col] = "Ошибка: Столбец не найден", "N/A", "N/A"
             continue
+
         missing_before = int(df[col].isna().sum())
-        status, message, new_series = impute_missing_values_with_tabpfn_optimized(df, col)
-        missing_after = int(new_series.isna().sum())
+        _status, message, new_series = impute_missing_values_with_tabpfn(df,
+                                                                         col)  # `impute_missing_values_with_tabpfn` находится в секции AI/ML
         df_imputed[col] = new_series
-        final_results[col] = {"message": message, "missing_before": missing_before, "missing_after": missing_after}
+
+        final_missing_before[col] = missing_before
+        final_missing_after[col] = int(new_series.isna().sum())
+        final_processing_results[col] = message
 
     try:
         file_record = crud.get_file_by_uid(db, file_id)
-        with df_cache_lock:
-            df_cache.pop(file_id, None)
         with io.StringIO() as csv_buffer:
             df_imputed.to_csv(csv_buffer, index=False)
             s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
@@ -676,8 +675,8 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
         raise HTTPException(status_code=500, detail=f"Failed to save imputed file to S3: {str(e)}")
 
     return {
-        "results": final_results,
-        "preview": df_imputed.fillna("null").to_dict(orient="records")
+        "processing_results": final_processing_results, "missing_before": final_missing_before,
+        "missing_after": final_missing_after, "preview": df_imputed.fillna("null").to_dict(orient="records"),
     }
 
 
@@ -847,9 +846,6 @@ async def encode_categorical_features(
         with io.StringIO() as csv_buffer:
             df_encoded.to_csv(csv_buffer, index=False)
             s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
-
-        with df_cache_lock:
-            df_cache.pop(file_id, None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save encoded file to S3: {str(e)}")
 
