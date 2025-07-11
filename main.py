@@ -640,10 +640,6 @@ async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.g
     return {"columns": analysis}
 
 
-from multiprocessing import cpu_count
-from concurrent.futures import ProcessPoolExecutor
-
-
 @app.post("/impute-missing/", tags=["Data Cleaning"])
 async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                          db: Session = Depends(database.get_db)):
