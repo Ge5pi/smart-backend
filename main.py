@@ -206,7 +206,7 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
     return [r.embedding for r in response.data]
 
 
-def impute_missing_values_with_tabpfn_optimized(df: pd.DataFrame, target_column: str, max_samples: int = 200):
+def impute_missing_values_with_tabpfn_optimized(df: pd.DataFrame, target_column: str, max_samples: int = 50):
     global tabpfn_classifier, tabpfn_regressor
 
     original_series = df[target_column]
