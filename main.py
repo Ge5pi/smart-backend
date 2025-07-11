@@ -5,26 +5,28 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
+
 import boto3
 import numpy as np
 import openai
 import pandas as pd
 import pinecone
 import redis
-from langdetect import detect, LangDetectException
-from fastapi import APIRouter
-from fastapi import Depends
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import LabelEncoder
+from langdetect import detect, LangDetectException
 from sqlalchemy.orm import Session
 from starlette import status
 from starlette.responses import Response
-from tabpfn import TabPFNClassifier, TabPFNRegressor
+# --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+# Убрали TabPFN, добавили импорты из scikit-learn
+from sklearn.ensemble import IsolationForest
+from sklearn.impute import KNNImputer, SimpleImputer
+from sklearn.preprocessing import LabelEncoder
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from tqdm import tqdm
+
 import auth
 import config
 import crud
@@ -32,6 +34,8 @@ import database
 import models
 import schemas
 from config import API_KEY, PINECONE_KEY
+
+# ... (весь остальной код до функции импутации остается без изменений) ...
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
@@ -187,93 +191,58 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
     return [r.embedding for r in response.data]
 
 
-def impute_missing_values_with_tabpfn(df: pd.DataFrame, target_column: str, max_samples: int = 50) -> tuple:
-    df_work = df.copy()
-    original_series = df_work[target_column].copy()
+# --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+# Полностью удалена медленная функция impute_missing_values_with_tabpfn
+# и заменена на быструю и эффективную функцию impute_with_sklearn
 
-    # 1. Проверка на наличие пропусков
-    if not df_work[target_column].isna().any():
-        return ("no_action", "В столбце нет пропущенных значений.", original_series)
+def impute_with_sklearn(df: pd.DataFrame, selected_columns: list) -> tuple[pd.DataFrame, dict]:
+    """
+    Заполняет пропуски в выбранных столбцах, используя KNNImputer для числовых
+    и SimpleImputer (most_frequent) для категориальных данных.
+    """
+    df_imputed = df.copy()
+    processing_results = {}
 
-    # 2. Разделение данных
-    mask_missing = df_work[target_column].isna()
-    df_complete = df_work[~mask_missing]
-    df_missing = df_work[mask_missing]
+    # Разделяем выбранные столбцы на числовые и категориальные
+    numeric_cols_to_impute = [
+        col for col in selected_columns if col in df_imputed.columns and pd.api.types.is_numeric_dtype(df_imputed[col])
+    ]
+    categorical_cols_to_impute = [
+        col for col in selected_columns if
+        col in df_imputed.columns and not pd.api.types.is_numeric_dtype(df_imputed[col])
+    ]
 
-    if len(df_complete) == 0:
-        return ("skipped", "Нет полных данных для обучения модели.", original_series)
+    # 1. Обработка числовых столбцов с помощью KNNImputer
+    if numeric_cols_to_impute:
+        print(f"Применение KNNImputer к столбцам: {numeric_cols_to_impute}")
+        # Выбираем все числовые столбцы для более точного поиска соседей
+        numeric_df = df_imputed.select_dtypes(include=np.number)
 
-    # Ограничение выборки для производительности
-    if len(df_complete) > max_samples:
-        df_complete = df_complete.sample(n=max_samples, random_state=42)
+        knn_imputer = KNNImputer(n_neighbors=5)
 
-    # 3. Выбор признаков для обучения
-    feature_columns = [col for col in df_work.columns if col != target_column]
-    useful_features = []
-    for col in feature_columns:
-        # Пропускаем столбцы с большим количеством пропусков или высокой кардинальностью
-        if df_complete[col].isna().sum() / len(df_complete) > 0.5 or df_complete[col].nunique() > 100:
-            continue
-        useful_features.append(col)
+        # Обучаем на всех числовых данных, но трансформируем только выбранные
+        imputed_data = knn_imputer.fit_transform(numeric_df)
 
-    if not useful_features:
-        return ("skipped", "Не найдено подходящих признаков для обучения.", original_series)
+        # Создаем DataFrame из результатов с правильными столбцами и индексами
+        imputed_df = pd.DataFrame(imputed_data, columns=numeric_df.columns, index=numeric_df.index)
 
-    # 4. Подготовка данных для модели
-    X_train = df_complete[useful_features].copy()
-    y_train = df_complete[target_column].copy()
-    X_predict = df_missing[useful_features].copy()
+        # Обновляем только те столбцы, которые были выбраны для импутации
+        for col in numeric_cols_to_impute:
+            df_imputed[col] = imputed_df[col]
+            processing_results[col] = "Пропуски заполнены методом k-ближайших соседей (KNN)."
 
-    # Предобработка признаков
-    for col in useful_features:
-        if X_train[col].dtype == 'object':
-            le = LabelEncoder()
-            # Заполняем пропуски в признаках как отдельную категорию
-            X_train[col] = X_train[col].fillna('missing')
-            X_predict[col] = X_predict[col].fillna('missing')
+    # 2. Обработка категориальных столбцов с помощью SimpleImputer
+    if categorical_cols_to_impute:
+        print(f"Применение SimpleImputer к столбцам: {categorical_cols_to_impute}")
+        simple_imputer = SimpleImputer(strategy='most_frequent')
 
-            all_values = pd.concat([X_train[col], X_predict[col]]).unique()
-            le.fit(all_values)
+        df_imputed[categorical_cols_to_impute] = simple_imputer.fit_transform(
+            df_imputed[categorical_cols_to_impute]
+        )
+        for col in categorical_cols_to_impute:
+            processing_results[col] = "Пропуски заполнены наиболее частым значением."
 
-            X_train[col] = le.transform(X_train[col])
-            X_predict[col] = le.transform(X_predict[col])
-        elif pd.api.types.is_numeric_dtype(X_train[col]):
-            median_val = X_train[col].median()
-            X_train[col] = X_train[col].fillna(median_val)
-            X_predict[col] = X_predict[col].fillna(median_val)
-
-    # 5. Обучение модели и предсказание
-    try:
-        # Решаем, использовать классификатор или регрессор
-        is_classification = pd.api.types.is_object_dtype(y_train.dtype) or y_train.nunique() < 20
-
-        if is_classification:
-            model = TabPFNClassifier(device='cpu')
-            le_target = LabelEncoder()
-            y_train_encoded = le_target.fit_transform(y_train.astype(str))
-
-            model.fit(X_train, y_train_encoded)
-            predictions_encoded = model.predict(X_predict)
-            predictions = le_target.inverse_transform(predictions_encoded)
-
-            # Попытка вернуть исходный тип данных, если он был числовым
-            if not pd.api.types.is_object_dtype(y_train.dtype):
-                predictions = pd.Series(predictions).astype(y_train.dtype).values
-        else:
-            model = TabPFNRegressor(device='cpu')
-            model.fit(X_train, y_train)
-            predictions = model.predict(X_predict)
-            # Приведение к исходному типу данных
-            predictions = pd.Series(predictions).astype(y_train.dtype).values
-
-        result = df_work[target_column].copy()
-        result.loc[mask_missing] = predictions
-
-        return "success", "Пропуски успешно заполнены.", result
-
-    except Exception as e:
-        print(f"ERROR during TabPFN imputation for column '{target_column}': {e}")
-        return "error", "Количество классов в столбце слишком большое", original_series
+    return df_imputed, processing_results
 
 
 def get_critic_evaluation(query: str, answer: str) -> dict:
@@ -635,48 +604,60 @@ async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.g
     return {"columns": analysis}
 
 
+# --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+# Полностью переписан эндпоинт для использования новой быстрой функции.
+# Убран медленный цикл, теперь всё выполняется одним вызовом.
+
 @app.post("/impute-missing/", tags=["Data Cleaning"])
 async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                          db: Session = Depends(database.get_db)):
-    """Заполняет пропуски в данных и сохраняет измененный файл обратно в S3."""
-    df = get_df_from_s3(db, file_id)
-
+    """
+    Заполняет пропуски в данных с помощью KNNImputer / SimpleImputer
+    и сохраняет измененный файл обратно в S3.
+    """
     if not columns:
-        raise HTTPException(status_code=400, detail="No columns selected for imputation.")
+        raise HTTPException(status_code=400, detail="Столбцы для импутации не выбраны.")
 
+    df = get_df_from_s3(db, file_id)
     selected_columns = json.loads(columns)
+
     if not isinstance(selected_columns, list) or not selected_columns:
-        raise HTTPException(status_code=400, detail="Invalid columns format.")
+        raise HTTPException(status_code=400, detail="Неверный формат списка столбцов.")
 
-    df_imputed = df.copy()
-    final_processing_results, final_missing_before, final_missing_after = {}, {}, {}
+    # Сохраняем информацию о пропусках ДО обработки
+    missing_before = {
+        col: int(df[col].isna().sum()) for col in selected_columns if col in df.columns
+    }
 
+    # Вызываем новую быструю функцию импутации ОДИН РАЗ
+    df_imputed, processing_results = impute_with_sklearn(df, selected_columns)
+
+    # Собираем информацию о пропусках ПОСЛЕ обработки
+    missing_after = {
+        col: int(df_imputed[col].isna().sum()) for col in selected_columns if col in df_imputed.columns
+    }
+
+    # Обновляем сообщения для столбцов, которые не были найдены в файле
     for col in selected_columns:
         if col not in df.columns:
-            final_processing_results[col], final_missing_before[col], final_missing_after[
-                col] = "Ошибка: Столбец не найден", "N/A", "N/A"
-            continue
+            processing_results[col] = "Ошибка: Столбец не найден в файле."
+            missing_before[col] = "N/A"
+            missing_after[col] = "N/A"
 
-        missing_before = int(df[col].isna().sum())
-        _status, message, new_series = impute_missing_values_with_tabpfn(df,
-                                                                         col)  # `impute_missing_values_with_tabpfn` находится в секции AI/ML
-        df_imputed[col] = new_series
-
-        final_missing_before[col] = missing_before
-        final_missing_after[col] = int(new_series.isna().sum())
-        final_processing_results[col] = message
-
+    # Сохраняем измененный DataFrame обратно в S3
     try:
         file_record = crud.get_file_by_uid(db, file_id)
         with io.StringIO() as csv_buffer:
             df_imputed.to_csv(csv_buffer, index=False)
             s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save imputed file to S3: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить обработанный файл в S3: {str(e)}")
 
     return {
-        "processing_results": final_processing_results, "missing_before": final_missing_before,
-        "missing_after": final_missing_after, "preview": df_imputed.fillna("null").to_dict(orient="records"),
+        "processing_results": processing_results,
+        "missing_before": missing_before,
+        "missing_after": missing_after,
+        "preview": df_imputed.fillna("null").to_dict(orient="records"),
     }
 
 
@@ -886,4 +867,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
