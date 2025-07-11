@@ -2,7 +2,6 @@ import io
 import json
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
@@ -38,6 +37,10 @@ from config import API_KEY, PINECONE_KEY
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
 
+
+tabpfn_classifier = None
+tabpfn_regressor = None
+
 try:
     s3_client = boto3.client(
         's3',
@@ -51,6 +54,11 @@ try:
 
 except Exception as e:
     print(f"FATAL: Could not connect to AWS or Redis on startup. Error: {e}")
+
+from threading import Lock
+
+df_cache: dict[str, pd.DataFrame] = {}
+df_cache_lock = Lock()
 
 LANG_MAP = {
     'ru': 'русском',
@@ -109,6 +117,10 @@ def allowed_file(filename):
 
 
 def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
+    with df_cache_lock:
+        if file_id in df_cache:
+            return df_cache[file_id]
+
     file_record = crud.get_file_by_uid(db, file_id)
     if not file_record:
         raise HTTPException(status_code=404, detail="File record not found in DB.")
@@ -119,11 +131,16 @@ def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
 
         file_extension = Path(file_record.file_name).suffix.lower()
         if file_extension == '.csv':
-            return pd.read_csv(file_content)
+            df = pd.read_csv(file_content)
         elif file_extension in ['.xlsx', '.xls']:
-            return pd.read_excel(file_content)
+            df = pd.read_excel(file_content)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type in S3.")
+
+        with df_cache_lock:
+            df_cache[file_id] = df
+
+        return df
 
     except Exception as e:
         print(f"Error reading file from S3: {e}")
@@ -190,6 +207,8 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
 
 
 def impute_missing_values_with_tabpfn_optimized(df: pd.DataFrame, target_column: str, max_samples: int = 200):
+    global tabpfn_classifier, tabpfn_regressor
+
     original_series = df[target_column]
 
     if not original_series.isna().any():
@@ -236,14 +255,18 @@ def impute_missing_values_with_tabpfn_optimized(df: pd.DataFrame, target_column:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         if is_classification:
-            model = TabPFNClassifier(device=device)
+            if tabpfn_classifier is None:
+                tabpfn_classifier = TabPFNClassifier(device=device)
+            model = tabpfn_classifier
             le_target = LabelEncoder()
             y_train_encoded = le_target.fit_transform(y_train.astype(str))
             model.fit(X_train.to_numpy(), y_train_encoded)
             predictions_encoded = model.predict(X_predict.to_numpy())
             predictions = le_target.inverse_transform(predictions_encoded)
         else:
-            model = TabPFNRegressor(device=device)
+            if tabpfn_regressor is None:
+                tabpfn_regressor = TabPFNRegressor(device=device)
+            model = tabpfn_regressor
             model.fit(X_train.to_numpy(), y_train.to_numpy())
             predictions = model.predict(X_predict.to_numpy())
 
@@ -509,6 +532,8 @@ async def upload_file(
     analysis = [{"column": col, "dtype": str(df[col].dtype), "nulls": int(df[col].isna().sum()),
                  "unique": int(df[col].nunique())} for col in df.columns]
     preview_data = df.fillna("null").to_dict(orient="records")
+    with df_cache_lock:
+        df_cache.pop(file_id, None)
     return {"columns": analysis, "preview": preview_data, "file_id": file_id, "file_name": original_filename}
 
 
@@ -615,6 +640,10 @@ async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.g
     return {"columns": analysis}
 
 
+from multiprocessing import cpu_count
+from concurrent.futures import ProcessPoolExecutor
+
+
 @app.post("/impute-missing/", tags=["Data Cleaning"])
 async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                          db: Session = Depends(database.get_db)):
@@ -630,23 +659,20 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
     df_imputed = df.copy()
     final_results = {}
 
-    def impute_column(col):
+    for col in selected_columns:
         if col not in df.columns:
-            return col, "Ошибка: Столбец не найден", "N/A", "N/A", df[col]
+            final_results[col] = {"message": "Ошибка: Столбец не найден", "missing_before": "N/A", "missing_after": "N/A"}
+            continue
         missing_before = int(df[col].isna().sum())
         status, message, new_series = impute_missing_values_with_tabpfn_optimized(df, col)
         missing_after = int(new_series.isna().sum())
-        return col, message, missing_before, missing_after, new_series
-
-    with ThreadPoolExecutor(max_workers=min(len(selected_columns), 4)) as executor:
-        results = list(executor.map(impute_column, selected_columns))
-
-    for col, msg, miss_before, miss_after, series in results:
-        df_imputed[col] = series
-        final_results[col] = {"message": msg, "missing_before": miss_before, "missing_after": miss_after}
+        df_imputed[col] = new_series
+        final_results[col] = {"message": message, "missing_before": missing_before, "missing_after": missing_after}
 
     try:
         file_record = crud.get_file_by_uid(db, file_id)
+        with df_cache_lock:
+            df_cache.pop(file_id, None)
         with io.StringIO() as csv_buffer:
             df_imputed.to_csv(csv_buffer, index=False)
             s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
@@ -825,6 +851,9 @@ async def encode_categorical_features(
         with io.StringIO() as csv_buffer:
             df_encoded.to_csv(csv_buffer, index=False)
             s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
+
+        with df_cache_lock:
+            df_cache.pop(file_id, None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save encoded file to S3: {str(e)}")
 
