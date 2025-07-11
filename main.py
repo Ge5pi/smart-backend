@@ -187,7 +187,7 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
     return [r.embedding for r in response.data]
 
 
-def impute_missing_values_with_tabpfn(df: pd.DataFrame, target_column: str, max_samples: int = 1000) -> tuple:
+def impute_missing_values_with_tabpfn(df: pd.DataFrame, target_column: str, max_samples: int = 200) -> tuple:
     df_work = df.copy()
     original_series = df_work[target_column].copy()
 
