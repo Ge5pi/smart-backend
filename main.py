@@ -269,12 +269,11 @@ def impute_missing_values_with_tabpfn(df: pd.DataFrame, target_column: str, max_
         result = df_work[target_column].copy()
         result.loc[mask_missing] = predictions
 
-        return ("success", "Пропуски успешно заполнены.", result)
+        return "success", "Пропуски успешно заполнены.", result
 
     except Exception as e:
-        # Логирование ошибки на бэкенде
         print(f"ERROR during TabPFN imputation for column '{target_column}': {e}")
-        return ("error", f"Внутренняя ошибка модели: {str(e)}", original_series)
+        return "error", "Количество классов в столбце слишком большое", original_series
 
 
 def get_critic_evaluation(query: str, answer: str) -> dict:
