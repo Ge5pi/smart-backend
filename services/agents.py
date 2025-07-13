@@ -207,7 +207,7 @@ def create_narrative(question: str, df: pd.DataFrame, chart_url: str | None, raw
 
     try:
         response = client.chat.completions.create(
-            model="gpt-o4-mini",
+            model="o4-mini",
             messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
