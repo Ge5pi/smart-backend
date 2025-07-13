@@ -36,21 +36,31 @@ def get_schema_details(engine):
         schema_info.append(f"Table '{table_name}' with columns: {columns}")
     return "\n".join(schema_info) if schema_info else "No tables found."
 
+
 def create_analysis_plan(schema_details: str, client: openai.OpenAI):
+    """
+    Создает план анализа, фокусируясь на поиске неочевидных инсайтов,
+    корреляций и аномалий.
+    """
     prompt = f"""
-    You are a principal data analyst. Based on the database schema provided, create a concise,
-    step-by-step analysis plan. The plan should consist of 5-7 key business questions that can be answered using this data.
-    Return the plan as a JSON array of strings.
+    You are an expert data analyst. Your goal is to find **interesting and non-obvious insights**
+    hidden in the data. Based on the database schema provided, create a step-by-step analysis plan.
+
+    **Instructions for the plan:**
+    - The plan must consist of 5-7 analytical questions.
+    - Questions should be complex and aim to uncover relationships, not just state simple facts.
+    - **Include at least ONE question about trends over time** (e.g., using `datetime_created`).
+    - **Include at least ONE question that requires correlating/joining data from two different tables** (e.g., 'users' and 'an_files').
+    - **Include at least ONE question about finding distributions or anomalies** (e.g., 'What is the distribution of report statuses?', 'Are there users with an unusually high number of uploads?').
+
+    Return the plan as a single JSON array of strings.
 
     Database Schema:
     {schema_details}
-
-    Example Output:
-    ["Analyze sales dynamics by month", "Identify the top 10 most profitable products", "Segment users by purchase frequency"]
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="o4-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
         )
@@ -64,50 +74,68 @@ def create_analysis_plan(schema_details: str, client: openai.OpenAI):
         raise ValueError("The model did not return a list in the JSON response.")
     except Exception as e:
         print(f"Error creating analysis plan: {e}")
-        return ["Provide a general summary of each table."]
+        return ["Count the number of rows in each table."]
+
 
 # --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
 
 # -- Агент 3: SQL-аналитик (Супер-надежный) --
 def run_sql_query_agent(engine, question: str) -> tuple[pd.DataFrame, str]:
     """
-    Выполняет SQL-запрос и использует несколько стратегий для извлечения данных,
-    чтобы гарантировать результат. Возвращает кортеж: (DataFrame, raw_text_output).
+    Выполняет SQL-запрос с улучшенным промптом, который нацеливает
+    агента на более глубокий анализ.
     """
     try:
         db = SQLDatabase(engine=engine)
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
-        agent_executor = create_sql_agent(llm, db=db, agent_type="openai-tools", verbose=True)
+        llm = ChatOpenAI(model="o4-mini", temperature=0.2)  # Слегка повысим креативность
+
+        # --- УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ АГЕНТА ---
+        agent_prompt_prefix = """
+        You are an expert data analyst who is a master of SQL. Your task is to answer the user's question about the database.
+        - First, think step-by-step to understand the user's intent.
+        - If a question requires joining data from multiple tables to find a correlation, you must write a query with a JOIN.
+        - When dealing with dates, use appropriate date functions.
+        - After executing the query, do not just return the data. Your final answer should be a concise summary of the findings.
+        - Always double-check your query before execution.
+        """
+
+        agent_executor = create_sql_agent(
+            llm,
+            db=db,
+            agent_type="openai-tools",
+            verbose=True,
+            prefix=agent_prompt_prefix  # <-- Добавляем нашу новую инструкцию
+        )
 
         result = agent_executor.invoke({"input": question})
         final_output_text = result.get('output', '')
 
-        # --- СТРАТЕГИЯ 1: Поиск данных в промежуточных шагах (самый надежный) ---
+        # --- НАДЕЖНЫЙ ПАРСЕР (без изменений) ---
+        # Стратегия 1: Промежуточные шаги
         if 'intermediate_steps' in result and result['intermediate_steps']:
             raw_data = result['intermediate_steps'][-1][1]
             if isinstance(raw_data, str) and re.search(r"\[\s*\(.*?\)\s*\]", raw_data, re.DOTALL):
                 try:
                     data_list = ast.literal_eval(re.search(r"(\[.*\])", raw_data, re.DOTALL).group(1))
-                    if data_list:
-                        return pd.DataFrame(data_list), final_output_text
+                    if data_list: return pd.DataFrame(data_list), final_output_text
                 except Exception:
-                    pass # Если не получилось, переходим к следующей стратегии
+                    pass
             elif isinstance(raw_data, list) and raw_data:
                 return pd.DataFrame(raw_data), final_output_text
-
-        # --- СТРАТЕГИЯ 2: Поиск данных в финальном ответе с помощью Regex ---
+        # Стратегия 2: Финальный ответ
         match = re.search(r"\[\s*\(.*?\)\s*\]", final_output_text, re.DOTALL)
         if match:
             try:
                 data_list = ast.literal_eval(match.group(0))
-                if data_list:
-                    return pd.DataFrame(data_list), final_output_text
+                if data_list: return pd.DataFrame(data_list), final_output_text
             except Exception:
-                pass # Финальный фоллбэк
+                pass
 
-        # --- ФОЛЛБЭК: Если ничего не найдено, возвращаем пустой DataFrame, но с текстом ответа ---
-        print(f"Не удалось извлечь структурированные данные. Возвращаем текстовый ответ: {final_output_text}")
         return pd.DataFrame(), final_output_text
+
+    except Exception as e:
+        error_message = f"Критическая ошибка в SQL агенте: {e}"
+        return pd.DataFrame(), error_message
 
     except Exception as e:
         error_message = f"Критическая ошибка в SQL агенте для вопроса '{question}': {e}"
@@ -120,18 +148,23 @@ def create_visualization(df: pd.DataFrame, question: str) -> str | None:
     if df.empty or len(df.columns) < 2:
         return None
     try:
-        if 'date' in df.columns[0].lower() or 'month' in df.columns[0].lower(): chart_type = 'line'
-        else: chart_type = 'bar'
+        if 'date' in df.columns[0].lower() or 'month' in df.columns[0].lower():
+            chart_type = 'line'
+        else:
+            chart_type = 'bar'
         fig = None
         x_col, y_col = df.columns[0], df.columns[1]
-        if chart_type == 'bar': fig = px.bar(df, x=x_col, y=y_col, title=question)
-        elif chart_type == 'line': fig = px.line(df, x=x_col, y=y_col, title=question)
+        if chart_type == 'bar':
+            fig = px.bar(df, x=x_col, y=y_col, title=question)
+        elif chart_type == 'line':
+            fig = px.line(df, x=x_col, y=y_col, title=question)
         if fig:
             img_bytes = io.BytesIO()
             fig.write_image(img_bytes, format="png")
             img_bytes.seek(0)
             file_name = f"charts/{uuid.uuid4()}.png"
-            s3_client.upload_fileobj(img_bytes, config.S3_BUCKET_NAME, file_name, ExtraArgs={'ContentType': 'image/png'})
+            s3_client.upload_fileobj(img_bytes, config.S3_BUCKET_NAME, file_name,
+                                     ExtraArgs={'ContentType': 'image/png'})
             return f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/{file_name}"
         return None
     except Exception as e:
@@ -174,7 +207,7 @@ def create_narrative(question: str, df: pd.DataFrame, chart_url: str | None, raw
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-o4-mini",
             messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
