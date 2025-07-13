@@ -14,7 +14,7 @@ from config import SECRET_KEY
 
 # Конфигурация токена
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60  # Токен будет действовать 60 минут
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # Токен будет действовать 60 минут
 
 # Эта схема говорит FastAPI, что нужно искать токен в заголовке Authorization: Bearer <token>
 # tokenUrl указывает на эндпоинт, где можно получить токен (мы его сейчас создадим)

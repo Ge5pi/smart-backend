@@ -5,7 +5,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
-
+from routers import analytics_router
 import boto3
 import numpy as np
 import openai
@@ -155,14 +155,13 @@ def read_user_files(db: Session = Depends(database.get_db),
 
 
 app.include_router(user_router, tags=["Users"])
-
+app.include_router(analytics_router.router)
 
 @app.post("/sessions/start")
 async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),
                         db: Session = Depends(database.get_db)):
     print(f"User {current_user.email} (ID: {current_user.id}) is starting a new session.")
 
-    # Проверяем, что файл существует в БД
     file_record = crud.get_file_by_uid(db, file_id)
     if not file_record or file_record.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found or access denied.")
@@ -189,14 +188,9 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
 
 
 def impute_with_sklearn(df: pd.DataFrame, selected_columns: list) -> tuple[pd.DataFrame, dict]:
-    """
-    Заполняет пропуски в выбранных столбцах, используя KNNImputer для числовых
-    и SimpleImputer (most_frequent) для категориальных данных.
-    """
     df_imputed = df.copy()
     processing_results = {}
 
-    # Разделяем выбранные столбцы на числовые и категориальные
     numeric_cols_to_impute = [
         col for col in selected_columns if col in df_imputed.columns and pd.api.types.is_numeric_dtype(df_imputed[col])
     ]
@@ -205,26 +199,20 @@ def impute_with_sklearn(df: pd.DataFrame, selected_columns: list) -> tuple[pd.Da
         col in df_imputed.columns and not pd.api.types.is_numeric_dtype(df_imputed[col])
     ]
 
-    # 1. Обработка числовых столбцов с помощью KNNImputer
     if numeric_cols_to_impute:
         print(f"Применение KNNImputer к столбцам: {numeric_cols_to_impute}")
-        # Выбираем все числовые столбцы для более точного поиска соседей
         numeric_df = df_imputed.select_dtypes(include=np.number)
 
         knn_imputer = KNNImputer(n_neighbors=5)
 
-        # Обучаем на всех числовых данных, но трансформируем только выбранные
         imputed_data = knn_imputer.fit_transform(numeric_df)
 
-        # Создаем DataFrame из результатов с правильными столбцами и индексами
         imputed_df = pd.DataFrame(imputed_data, columns=numeric_df.columns, index=numeric_df.index)
 
-        # Обновляем только те столбцы, которые были выбраны для импутации
         for col in numeric_cols_to_impute:
             df_imputed[col] = imputed_df[col]
             processing_results[col] = "Пропуски заполнены методом k-ближайших соседей (KNN)."
 
-    # 2. Обработка категориальных столбцов с помощью SimpleImputer
     if categorical_cols_to_impute:
         print(f"Применение SimpleImputer к столбцам: {categorical_cols_to_impute}")
         simple_imputer = SimpleImputer(strategy='most_frequent')
@@ -276,7 +264,6 @@ def get_critic_evaluation(query: str, answer: str) -> dict:
 
 
 def get_refined_answer(history: list, original_answer: str, feedback: str, suggestion: str, lang_name: str) -> str:
-    """Генерирует улучшенный ответ на основе отзыва критика с указанием языка."""
     refiner_prompt = f"""Ты — эксперт по анализу данных. Твоя предыдущая попытка ответить на вопрос пользователя была 
     неудачной. Критик предоставил отзыв. Твоя задача — сгенерировать новый, финальный и правильный ответ, 
     который учитывает этот отзыв. 
@@ -338,16 +325,13 @@ pandas DataFrame `df`.
 
 
 def execute_python_code(df: pd.DataFrame, code: str) -> tuple[pd.DataFrame, str]:
-    """Выполняет Python-код над DataFrame и возвращает измененный DataFrame и строковый результат."""
     print(f"TOOL: Выполнение кода:\n---\n{code}\n---")
     local_scope = {"df": df.copy(), "pd": pd}
     try:
         lines = code.strip().split('\n')
         if len(lines) == 1:
-            # Если одна строка, считаем ее выражением для вывода
             output = eval(code, {"pd": pd}, local_scope)
         else:
-            # Если несколько строк, выполняем все, кроме последней, а последнюю выводим
             exec_lines, eval_line = lines[:-1], lines[-1]
             exec("\n".join(exec_lines), {"pd": pd}, local_scope)
             output = eval(eval_line, {"pd": pd}, local_scope)
@@ -361,7 +345,6 @@ def execute_python_code(df: pd.DataFrame, code: str) -> tuple[pd.DataFrame, str]
         return final_df, str(output)
     except Exception:
         try:
-            # Если eval не сработал, пробуем просто выполнить весь код
             exec(code, {"pd": pd}, local_scope)
             final_df = local_scope['df']
             return final_df, "Код выполнен, DataFrame обновлен."
@@ -370,7 +353,6 @@ def execute_python_code(df: pd.DataFrame, code: str) -> tuple[pd.DataFrame, str]
 
 
 def run_rag_pipeline(file_id: str, query: str, lang_name: str) -> str:
-    """Ищет релевантную информацию и отвечает на вопрос с указанием языка."""
     query_embedding = get_embeddings([query])[0]
     search_results = index.query(vector=query_embedding, top_k=7, filter={"file_id": file_id}, include_metadata=True)
     context = " "
@@ -408,7 +390,6 @@ def save_dataframe_to_file(db: Session, file_id: str, df_to_save: pd.DataFrame) 
 
 
 def answer_question_from_context(file_id: str, query: str, lang_name: str) -> str:
-    """Обёртка для RAG пайплайна, передающая язык."""
     print(f"TOOL: RAG-запрос для файла {file_id} на языке '{lang_name}': '{query}'")
     return run_rag_pipeline(file_id, query, lang_name)
 
@@ -433,7 +414,6 @@ tools_definition = [
         "parameters": {
             "type": "object",
             "properties": {
-                # Модель должна передавать только поисковый запрос
                 "query": {"type": "string", "description": "Вопрос для поиска по смыслу в документе."}
             },
             "required": ["query"]
@@ -445,7 +425,7 @@ tools_definition = [
                        "просьбе пользователя, например: 'Сохрани результат'.",
         "parameters": {
             "type": "object",
-            "properties": {}  # Аргументы не требуются от модели
+            "properties": {}
         }
     }},
 ]
@@ -489,7 +469,6 @@ async def upload_file(
 
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # Логика индексации в Pinecone
     vectors_to_upsert = []
     df_rag = df.where(pd.notnull(df), 'null')
     for i in tqdm(range(len(df_rag)), desc=f"Подготовка векторов для {file_id}"):
@@ -526,23 +505,20 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
     file_id = session_data["file_id"]
     messages = session_data["messages"]
 
-    # --- ОПРЕДЕЛЕНИЕ ЯЗЫКА ---
     try:
         lang_code = detect(query)
     except LangDetectException:
-        lang_code = 'ru'  # Язык по умолчанию, если не удалось определить
+        lang_code = 'ru'
 
-    lang_name = LANG_MAP.get(lang_code, lang_code)  # Получаем название языка
-    # -------------------------
+    lang_name = LANG_MAP.get(lang_code, lang_code)
 
     df = get_df_from_s3(db, file_id)
 
     buf = io.StringIO()
-    df.info(buf=buf, verbose=False)  # verbose=False для краткости
+    df.info(buf=buf, verbose=False)
     df_info = buf.getvalue()
     df_head = df.head().to_markdown()
 
-    # Добавляем инструкцию о языке в системный промпт при каждом запросе
     messages[0][
         'content'] = SYSTEM_PROMPT + f"\n\nВАЖНО: Текущий язык общения - {lang_name}. Все ответы должны быть на этом " \
                                      f"языке. "
@@ -567,7 +543,6 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
 
-                # --- Передаем язык в инструменты ---
                 if function_name == "execute_python_code":
                     df, function_response = execute_python_code(df=df, code=function_args.get("code"))
                 elif function_name == "save_dataframe_to_file":
@@ -610,7 +585,6 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
 
 @app.post("/analyze/", tags=["File Operations"])
 async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.get_db)):
-    # Используем новую функцию-помощник
     df = get_df_from_s3(db, file_id)
 
     analysis = [{"column": col, "dtype": str(df[col].dtype), "nulls": int(df[col].isna().sum()),
@@ -619,17 +593,9 @@ async def analyze_csv(file_id: str = Form(...), db: Session = Depends(database.g
     return {"columns": analysis}
 
 
-# --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
-# Полностью переписан эндпоинт для использования новой быстрой функции.
-# Убран медленный цикл, теперь всё выполняется одним вызовом.
-
 @app.post("/impute-missing/", tags=["Data Cleaning"])
 async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                          db: Session = Depends(database.get_db)):
-    """
-    Заполняет пропуски в данных с помощью KNNImputer / SimpleImputer
-    и сохраняет измененный файл обратно в S3.
-    """
     if not columns:
         raise HTTPException(status_code=400, detail="Столбцы для импутации не выбраны.")
 
@@ -639,27 +605,22 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
     if not isinstance(selected_columns, list) or not selected_columns:
         raise HTTPException(status_code=400, detail="Неверный формат списка столбцов.")
 
-    # Сохраняем информацию о пропусках ДО обработки
     missing_before = {
         col: int(df[col].isna().sum()) for col in selected_columns if col in df.columns
     }
 
-    # Вызываем новую быструю функцию импутации ОДИН РАЗ
     df_imputed, processing_results = impute_with_sklearn(df, selected_columns)
 
-    # Собираем информацию о пропусках ПОСЛЕ обработки
     missing_after = {
         col: int(df_imputed[col].isna().sum()) for col in selected_columns if col in df_imputed.columns
     }
 
-    # Обновляем сообщения для столбцов, которые не были найдены в файле
     for col in selected_columns:
         if col not in df.columns:
             processing_results[col] = "Ошибка: Столбец не найден в файле."
             missing_before[col] = "N/A"
             missing_after[col] = "N/A"
 
-    # Сохраняем измененный DataFrame обратно в S3
     try:
         file_record = crud.get_file_by_uid(db, file_id)
         with io.StringIO() as csv_buffer:
@@ -679,7 +640,6 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
 @app.post("/outliers/", tags=["Data Cleaning"])
 async def detect_outliers_endpoint(file_id: str = Form(...), columns: Optional[str] = Form(None),
                                    db: Session = Depends(database.get_db)):
-    """Находит выбросы в числовых столбцах."""
     df = get_df_from_s3(db, file_id)
 
     if columns:
@@ -748,7 +708,6 @@ async def get_chart_data(
 
     try:
         if chart_type in ["histogram", "pie"]:
-            # ... (логика без изменений)
             if df[column1].dtype == 'object':
                 counts = df[column1].dropna().value_counts().nlargest(15)
             else:
@@ -806,33 +765,26 @@ async def get_chart_data(
         raise HTTPException(status_code=500, detail=f"Ошибка при подготовке данных для графика: {str(e)}")
 
 
-# main.py
-
 @app.post("/encode-categorical/", tags=["Data Cleaning"])
 async def encode_categorical_features(
         file_id: str = Form(...),
         columns: str = Form(...),  # Ожидаем JSON-строку с массивом столбцов
         db: Session = Depends(database.get_db)
 ):
-    """
-    Кодирует выбранные категориальные столбцы методом One-Hot Encoding.
-    """
     df = get_df_from_s3(db, file_id)
     selected_columns = json.loads(columns)
 
     if not all(col in df.columns for col in selected_columns):
         raise HTTPException(status_code=404, detail="Один или несколько выбранных столбцов не найдены в файле.")
 
-    # Проверяем, что в выбранных столбцах нет слишком большого кол-ва уникальных значений
     for col in selected_columns:
-        if df[col].nunique() > 50:  # Ограничение, чтобы не создавать тысячи столбцов
+        if df[col].nunique() > 50:
             raise HTTPException(
                 status_code=400,
                 detail=f"Столбец '{col}' имеет слишком много ({df[col].nunique()}) уникальных значений для кодирования. Максимум: 50."
             )
 
     try:
-        # Применяем One-Hot Encoding
         df_encoded = pd.get_dummies(df, columns=selected_columns, prefix=selected_columns)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка при кодировании: {e}")
@@ -863,18 +815,16 @@ async def get_paginated_preview(
         page_size: int = Query(50, ge=1, le=200),
         db: Session = Depends(database.get_db)
 ):
-    """Отдает предпросмотр файла с пагинацией."""
     df = get_df_from_s3(db, file_id)
 
     start_index = (page - 1) * page_size
     end_index = start_index + page_size
 
-    # Вырезаем нужный "кусок" данных
     paginated_preview_df = df.iloc[start_index:end_index]
 
     return {
         "preview": paginated_preview_df.fillna("null").to_dict(orient="records"),
-        "total_rows": len(df)  # Отдаем общее кол-во строк для расчета страниц
+        "total_rows": len(df)
     }
 
 

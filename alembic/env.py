@@ -6,7 +6,7 @@ from sqlalchemy import pool
 
 from alembic import context
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../smart_data_cleaner/backend'))
 
 # Импортируем все необходимое из новых модулей
 from config import DATABASE_URL
