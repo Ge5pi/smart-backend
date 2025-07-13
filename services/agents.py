@@ -87,7 +87,7 @@ def run_sql_query_agent(engine, question: str) -> tuple[pd.DataFrame, str]:
     """
     try:
         db = SQLDatabase(engine=engine)
-        llm = ChatOpenAI(model="o4-mini", temperature=0.2)  # Слегка повысим креативность
+        llm = ChatOpenAI(model="o4-mini")  # Слегка повысим креативность
 
         # --- УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ АГЕНТА ---
         agent_prompt_prefix = """
