@@ -157,6 +157,7 @@ def read_user_files(db: Session = Depends(database.get_db),
 app.include_router(user_router, tags=["Users"])
 app.include_router(analytics_router.router)
 
+
 @app.post("/sessions/start")
 async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),
                         db: Session = Depends(database.get_db)):
