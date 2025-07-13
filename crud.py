@@ -89,8 +89,7 @@ def get_decrypted_connection_string(db: Session, connection_id: int, user_id: in
     return None
 
 
-def create_report(db: Session, user_id: int, connection_id: int, task_id: str) -> models.Report:
-    """Создает начальную запись для нового отчета."""
+def create_report(db: Session, user_id: int, connection_id: int, task_id: str = None) -> models.Report:
     db_report = models.Report(
         user_id=user_id,
         connection_id=connection_id,

@@ -56,7 +56,9 @@ def generate_report(
 
     # Создаем запись в БД для отчета со статусом PENDING
     # Это нужно, чтобы получить report_id для передачи в задачу
-    initial_report = crud.create_report(db, user_id=current_user.id, connection_id=connection_id, task_id="temp")
+    initial_report = crud.create_report(
+        db, user_id=current_user.id, connection_id=connection_id
+    )
 
     # Запускаем нашу фоновую задачу с помощью .delay()
     # .delay() - это сокращенный способ вызова .apply_async()
@@ -65,6 +67,7 @@ def generate_report(
     # Обновляем запись в БД, добавляя реальный ID задачи от Celery
     initial_report.task_id = task.id
     db.commit()
+    db.refresh(initial_report)
 
     return initial_report
 
