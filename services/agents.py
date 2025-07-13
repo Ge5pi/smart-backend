@@ -77,44 +77,51 @@ def create_analysis_plan(schema_details: str, client: openai.OpenAI):
 # -- Агент 3: SQL-аналитик (Исполнитель) --
 def run_sql_query_agent(engine, question: str) -> pd.DataFrame:
     """
-    Преобразует вопрос в SQL-запрос, выполняет его,
-    умно парсит ответ и возвращает результат как DataFrame.
+    Преобразует вопрос в SQL-запрос, выполняет его и возвращает результат как DataFrame,
+    извлекая его напрямую из промежуточных шагов агента.
     """
     try:
         db = SQLDatabase(engine=engine)
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
         agent_executor = create_sql_agent(llm, db=db, agent_type="openai-tools", verbose=True)
 
+        # Вызываем агент
         result = agent_executor.invoke({"input": question})
-        output_text = result.get('output', '')
 
-        # --- УЛУЧШЕННЫЙ ПАРСЕР ---
-        # 1. Ищем в тексте ответа часть, похожую на список list of tuples: '[ (...), (...) ]'
-        match = re.search(r"\[\s*\(.*?\)\s*\]", output_text, re.DOTALL)
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+        # Ищем результат не в 'output', а в 'intermediate_steps'
+        if 'intermediate_steps' in result and result['intermediate_steps']:
+            # Наблюдение (observation) от последнего шага - это то, что вернул инструмент
+            raw_data = result['intermediate_steps'][-1][1]
 
-        data_list = []
-        if match:
-            list_str = match.group(0)
-            try:
-                # 2. Пытаемся безопасно преобразовать найденную строку в Python-объект
-                data_list = ast.literal_eval(list_str)
-            except (ValueError, SyntaxError) as e:
-                print(f"Ошибка парсинга ответа агента: {e}. Ответ: {list_str}")
-                return pd.DataFrame() # Возвращаем пустой DataFrame в случае ошибки парсинга
+            # Данные могут быть строкой, которую нужно преобразовать в список
+            if isinstance(raw_data, str):
+                try:
+                    # Используем ast.literal_eval для безопасного преобразования строки в список
+                    data_list = ast.literal_eval(raw_data)
+                except (ValueError, SyntaxError):
+                    print(f"Ошибка парсинга строки с данными: {raw_data}")
+                    return pd.DataFrame()
+            elif isinstance(raw_data, list):
+                data_list = raw_data
+            else:
+                data_list = []
 
-        if data_list:
-            # 3. Если все успешно, создаем DataFrame
-            # Пытаемся получить заголовки, если агент их предоставил (нужна доработка)
-            # Пока создаем с автоматическими заголовками
-            return pd.DataFrame(data_list)
-        else:
-            print(f"Не удалось извлечь данные из ответа агента. Ответ: {output_text}")
-            return pd.DataFrame()
+            if data_list:
+                # Пытаемся получить имена столбцов из запроса агента для красивого DataFrame
+                try:
+                    query = result['intermediate_steps'][-1][0].tool_input['query']
+                    columns = [desc[0] for desc in create_engine(db.uri).execute(query).cursor.description]
+                    return pd.DataFrame(data_list, columns=columns)
+                except:
+                    return pd.DataFrame(data_list) # Фоллбэк, если не удалось получить столбцы
+
+        print(f"Не удалось извлечь данные из промежуточных шагов. Финальный ответ агента: {result.get('output')}")
+        return pd.DataFrame()
 
     except Exception as e:
         print(f"Критическая ошибка в SQL агенте для вопроса '{question}': {e}")
         return pd.DataFrame()
-
 
 # -- Агент 4: Визуализатор --
 def create_visualization(df: pd.DataFrame, question: str) -> str | None:
