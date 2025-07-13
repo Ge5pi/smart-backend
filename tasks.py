@@ -44,11 +44,13 @@ def generate_full_report(self, connection_id: int, user_id: int, report_id: int)
             self.update_state(state='IN_PROGRESS', meta={'status': f'Шаг {i + 1}/{total_steps}: {question}'})
 
             # Выполняем запросы и генерируем контент
-            df = agents.run_sql_query_agent(engine, question)
-            chart_url = agents.create_visualization(df, question)
-            narrative = agents.create_narrative(question, df, chart_url, client)
+            df, raw_text = agents.run_sql_query_agent(engine, question)
 
-            # Собираем секцию для отчета
+            chart_url = agents.create_visualization(df, question)
+
+            # Передаем и DataFrame, и сырой текст в create_narrative
+            narrative = agents.create_narrative(question, df, chart_url, raw_text, client)
+
             report_sections.append({
                 "title": question,
                 "narrative": narrative,
