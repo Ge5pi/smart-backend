@@ -1,6 +1,8 @@
 # services/agents.py
+import ast
 import json
 import io
+import re
 import uuid
 import pandas as pd
 import openai
@@ -74,31 +76,43 @@ def create_analysis_plan(schema_details: str, client: openai.OpenAI):
 
 # -- Агент 3: SQL-аналитик (Исполнитель) --
 def run_sql_query_agent(engine, question: str) -> pd.DataFrame:
-    """Преобразует вопрос в SQL-запрос, выполняет его и возвращает результат как DataFrame."""
+    """
+    Преобразует вопрос в SQL-запрос, выполняет его,
+    умно парсит ответ и возвращает результат как DataFrame.
+    """
     try:
         db = SQLDatabase(engine=engine)
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)  # Use a powerful model for SQL generation
+        llm = ChatOpenAI(model="gpt-4o", temperature=0)
         agent_executor = create_sql_agent(llm, db=db, agent_type="openai-tools", verbose=True)
 
-        # The agent's output is often a string, which we need to parse.
-        # Example output: {'input': '...', 'output': "[(1, 'Product A'), (2, 'Product B')]"}
         result = agent_executor.invoke({"input": question})
+        output_text = result.get('output', '')
 
-        # This is a simple parser. It might need to be more robust.
-        # We assume the data is in the 'output' key as a string representation of a list of tuples.
-        import ast
-        data_str = result.get('output', '[]')
-        data_list = ast.literal_eval(data_str)
+        # --- УЛУЧШЕННЫЙ ПАРСЕР ---
+        # 1. Ищем в тексте ответа часть, похожую на список list of tuples: '[ (...), (...) ]'
+        match = re.search(r"\[\s*\(.*?\)\s*\]", output_text, re.DOTALL)
 
-        # Try to get column names from the agent's thoughts or generate generic ones
-        # This part is tricky and might need refinement based on real agent responses.
-        # For now, let's create a generic DataFrame.
+        data_list = []
+        if match:
+            list_str = match.group(0)
+            try:
+                # 2. Пытаемся безопасно преобразовать найденную строку в Python-объект
+                data_list = ast.literal_eval(list_str)
+            except (ValueError, SyntaxError) as e:
+                print(f"Ошибка парсинга ответа агента: {e}. Ответ: {list_str}")
+                return pd.DataFrame() # Возвращаем пустой DataFrame в случае ошибки парсинга
+
         if data_list:
+            # 3. Если все успешно, создаем DataFrame
+            # Пытаемся получить заголовки, если агент их предоставил (нужна доработка)
+            # Пока создаем с автоматическими заголовками
             return pd.DataFrame(data_list)
         else:
-            return pd.DataFrame()  # Return empty dataframe
+            print(f"Не удалось извлечь данные из ответа агента. Ответ: {output_text}")
+            return pd.DataFrame()
+
     except Exception as e:
-        print(f"Error running SQL agent for question '{question}': {e}")
+        print(f"Критическая ошибка в SQL агенте для вопроса '{question}': {e}")
         return pd.DataFrame()
 
 

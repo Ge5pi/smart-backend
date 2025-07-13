@@ -1,12 +1,15 @@
-# routers/analytics_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
-from tasks import generate_full_report
+from celery.result import AsyncResult
 
-
-import crud, schemas, models, auth, database
+from tasks import generate_full_report, celery_app
+import crud
+import schemas
+import models
+import auth
+import database
 
 router = APIRouter(
     prefix="/analytics",
@@ -45,39 +48,32 @@ def get_user_connections(
 
 @router.post("/reports/generate/{connection_id}", response_model=schemas.ReportInfo)
 def generate_report(
-    connection_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        connection_id: int,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Запускает асинхронную задачу генерации отчета."""
     db_conn = crud.get_db_connection_by_id(db, connection_id, user_id=current_user.id)
     if not db_conn:
         raise HTTPException(status_code=404, detail="Подключение не найдено")
 
-    # Создаем запись в БД для отчета со статусом PENDING
-    # Это нужно, чтобы получить report_id для передачи в задачу
-    initial_report = crud.create_report(
-        db, user_id=current_user.id, connection_id=connection_id
+    # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+    # 1. Создаем запись отчета БЕЗ task_id, чтобы получить report.id
+    #    (Предполагается, что вы изменили crud.create_report и models.py, как обсуждалось)
+    report_record = crud.create_report(
+        db=db, user_id=current_user.id, connection_id=connection_id
     )
 
-    # Запускаем нашу фоновую задачу с помощью .delay()
-    # .delay() - это сокращенный способ вызова .apply_async()
-    task = generate_full_report.delay(connection_id, current_user.id, initial_report.id)
+    # 2. Теперь, имея report.id, запускаем задачу Celery
+    task = generate_full_report.delay(connection_id, current_user.id, report_record.id)
 
-    # Обновляем запись в БД, добавляя реальный ID задачи от Celery
-    initial_report.task_id = task.id
+    # 3. Обновляем нашу запись в БД, добавляя реальный, УНИКАЛЬНЫЙ ID задачи
+    report_record.task_id = task.id
     db.commit()
-    db.refresh(initial_report)
+    db.refresh(report_record)
 
-    return initial_report
+    return report_record
 
-
-# routers/analytics_router.py
-from celery.result import AsyncResult
-from tasks import celery_app  # Импортируем наш celery_app
-
-
-# ...
 
 @router.get("/reports/status/{task_id}")
 def get_report_status(task_id: str):
@@ -86,8 +82,8 @@ def get_report_status(task_id: str):
 
     response = {
         "task_id": task_id,
-        "status": task_result.status,  # Статус выполнения (PENDING, SUCCESS, FAILURE)
-        "info": task_result.info,  # Дополнительная информация (то, что мы передаем в meta)
+        "status": task_result.status,
+        "info": task_result.info,
     }
     return response
 
