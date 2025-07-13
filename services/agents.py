@@ -10,8 +10,6 @@ from sqlalchemy import inspect, create_engine
 from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_community.utilities.sql_database import SQLDatabase
-
-# Plotly for charts
 import plotly.express as px
 
 # S3 Client and config from main.py (we need to find a way to share it)
