@@ -1,6 +1,6 @@
 # tasks.py
-from .celery_worker import celery_app
-from .database import SessionLocal
+from celery_worker import celery_app
+from database import SessionLocal
 import crud
 from sqlalchemy import create_engine
 import openai
