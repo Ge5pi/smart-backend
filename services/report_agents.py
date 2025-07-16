@@ -59,7 +59,7 @@ def create_visualization(df: pd.DataFrame, question: str) -> str | None:
 
 # --- Базовый класс агента ---
 class BaseAgent:
-    def __init__(self, model="gpt-4o-mini"):
+    def __init__(self, model="o4-mini"):
         self.client = openai_client
         self.model = model
 
@@ -98,7 +98,7 @@ class Orchestrator(BaseAgent):
         ```
         """
         response = self.client.chat.completions.create(
-            model="gpt-4o", messages=[{"role": "user", "content": prompt}],
+            model="o4-mini", messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}, temperature=0.2
         )
         try:
@@ -130,13 +130,12 @@ class SQLCoder(BaseAgent):
             include_tables=self.table_names,
             sample_rows_in_table_info=3
         )
-        self.llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.API_KEY)
+        self.llm = ChatOpenAI(model="o4-mini", temperature=0, api_key=config.API_KEY)
 
     def run(self, question: str) -> dict:
-        # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: СОЗДАЕМ ПРОМПТ С ПОЛНЫМ КОНТЕКСТОМ ---
 
-        # 1. Получаем полную схему с примерами строк ЗАРАНЕЕ
         table_info = self.db.get_table_info()
+        escaped_table_info = table_info.replace("{", "{{").replace("}", "}}")
         print(f"--- Schema Info being passed to Agent ---\n{table_info}\n---")
 
         # 2. Создаем мощный промпт, который "скармливает" схему агенту
@@ -146,7 +145,7 @@ class SQLCoder(BaseAgent):
 
 **DATABASE SCHEMA AND SAMPLE ROWS:**
 ```sql
-{table_info}
+{escaped_table_info}
 Use code with caution.
 Python
 Think step-by-step to construct the query based on the schema above. Double-check table and column names (e.g., is it user_id or users.id?). Use date functions for time-based questions.
@@ -159,7 +158,9 @@ After thinking, respond with ONLY the final SQL query in the correct tool format
                 db=self.db,
                 agent_type="openai-tools",
                 verbose=True,
-                prefix=agent_prompt,  # Используем наш новый промпт
+                agent_kwargs={
+                    "system_message": agent_prompt
+                },
                 handle_parsing_errors=True
             )
             result = agent_executor.invoke({"input": question})
@@ -274,7 +275,7 @@ class Storyteller(BaseAgent):
         **Tone:** Confident, insightful, business-oriented. Focus on the 'so what'. Respond ONLY with the JSON.
         """
         response = self.client.chat.completions.create(
-            model="gpt-4o", messages=[{"role": "user", "content": prompt}],
+            model="o4-mini", messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         try:
