@@ -106,11 +106,25 @@ class SQLCoder(BaseAgent):
         table_info = self.db.get_table_info()
         escaped_table_info = table_info.replace("{", "{{").replace("}", "}}")
         system_prompt = f"""You are an expert PostgreSQL data analyst. Your task is to write a single, syntactically 
-        correct SQL query to answer the user's question. **VERY IMPORTANT**: You have been provided with the complete 
-        schema and sample rows for all tables below. Use this information directly. You MUST NOT use `sql_db_schema` 
-        or `sql_db_list_tables`. Go straight to writing the query using `sql_db_query`. **DATABASE SCHEMA AND SAMPLE 
-        ROWS:** ```sql {escaped_table_info} ``` Think step-by-step to construct the query. After thinking, 
-        respond with ONLY the final SQL query in the correct tool format. """
+                correct SQL query to answer the user's question. **VERY IMPORTANT**: You have been provided with the complete 
+                schema and sample rows for all tables below. Use this information directly. You MUST NOT use `sql_db_schema` 
+                or `sql_db_list_tables`. Go straight to writing the query using `sql_db_query`.
+
+                **DATABASE SCHEMA AND SAMPLE ROWS:**
+                ```sql
+                {escaped_table_info}
+                ```
+
+                === SQL GENERATION GUIDELINES ===
+                - Avoid Cartesian joins! Always use specific JOIN keys or GROUP BY to prevent duplicate rows.
+                - For comparisons across tables (e.g., reports and files), use aggregations like MAX(), MIN(), COUNT(), etc.
+                - Prefer LEFT JOIN when data might be missing on one side.
+                - Avoid LIMIT unless explicitly required.
+                - If correlating two timestamps (e.g., last file upload vs. last report), use GROUP BY user_id or email.
+                - NEVER select more than 50 rows unless asked. Use filters or aggregations.
+
+                Think step-by-step to construct the query. Respond ONLY with the final SQL query.
+                """
         try:
             agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=True, agent_kwargs={"system_message": system_prompt}, handle_parsing_errors=True)
             result = agent_executor.invoke({"input": question})
