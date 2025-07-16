@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 import crud
 import database
 import security_utils
-from agents import Orchestrator, SQLCoder, Critic, Storyteller
+from services.report_agents import Orchestrator, SQLCoder, Critic, Storyteller
 from celery_worker import celery_app
 
 
