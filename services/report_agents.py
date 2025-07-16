@@ -98,8 +98,8 @@ class Orchestrator(BaseAgent):
         ```
         """
         response = self.client.chat.completions.create(
-            model="o4-mini", messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
+            model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}, temperature=1.5
         )
         try:
             data = json.loads(response.choices[0].message.content)
