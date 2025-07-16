@@ -86,7 +86,7 @@ class Orchestrator(BaseAgent):
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=1.5
+            temperature=1
         )
         try:
             data = json.loads(response.choices[0].message.content)
@@ -104,7 +104,7 @@ class Orchestrator(BaseAgent):
             analysis_plan[:0] = evaluation['new_hypotheses']
 
 
-# --- 2. Агент-Исполнитель SQL ---
+# --- 2. Агент-Исполнитель SQL (Финальная, надежная версия) ---
 class SQLCoder(BaseAgent):
     def __init__(self, engine, **kwargs):
         super().__init__(**kwargs)
@@ -112,19 +112,19 @@ class SQLCoder(BaseAgent):
         self.inspector = inspect(engine)
         self.table_names = [name for name in self.inspector.get_table_names() if name != 'alembic_version']
         self.db = SQLDatabase(engine=engine, include_tables=self.table_names, sample_rows_in_table_info=3)
-        self.llm = ChatOpenAI(model=self.model, temperature=0.2, api_key=config.API_KEY)
+        self.llm = ChatOpenAI(model=self.model, temperature=0.1, api_key=config.API_KEY)
 
     def run(self, question: str) -> dict:
         table_info = self.db.get_table_info()
         escaped_table_info = table_info.replace("{", "{{").replace("}", "}}")
         system_prompt = f"""
         You are an expert PostgreSQL data analyst. Your task is to write a single, syntactically correct SQL query to answer the user's question.
-        **VERY IMPORTANT**: You have been provided with the complete schema and sample rows for all tables below. Use this information directly.
+        **VERY IMPORTANT**: You have been provided with the complete schema and sample rows for all tables below. Use this information directly. You MUST NOT use `sql_db_schema` or `sql_db_list_tables`. Go straight to writing the query using `sql_db_query`.
         **DATABASE SCHEMA AND SAMPLE ROWS:**
         ```sql
         {escaped_table_info}
         ```
-        Think step-by-step to construct the query based on the schema above. Respond with ONLY the final SQL query.
+        Think step-by-step to construct the query. After thinking, respond with ONLY the final SQL query in the correct tool format.
         """
         try:
             agent_executor = create_sql_agent(
@@ -136,6 +136,7 @@ class SQLCoder(BaseAgent):
                 handle_parsing_errors=True
             )
             result = agent_executor.invoke({"input": question})
+
             sql_query = "Could not extract SQL query."
             if 'intermediate_steps' in result and result['intermediate_steps']:
                 for step in result['intermediate_steps']:
@@ -146,9 +147,17 @@ class SQLCoder(BaseAgent):
                             break
 
             df = pd.DataFrame()
+            # --- САМОЕ ВАЖНОЕ ИЗМЕНЕНИЕ ---
             if sql_query and "Could not extract" not in sql_query:
-                with self.engine.connect() as connection:
-                    df = pd.read_sql(sql_query, connection)
+                print(f"--- RELIABLE EXECUTION: Running extracted SQL query directly. ---\n{sql_query}")
+                try:
+                    with self.engine.connect() as connection:
+                        df = pd.read_sql(sql_query, connection)
+                    print(f"--- SUCCESS: Retrieved {len(df)} rows. ---")
+                except Exception as e:
+                    print(f"--- RELIABLE EXECUTION FAILED: {e} ---")
+                    return {"question": question, "data": df, "raw_output": f"Query execution failed: {e}",
+                            "error": str(e)}
 
             return {"question": question, "data": df, "raw_output": result.get('output', ''), "error": None}
 
@@ -202,17 +211,17 @@ class Critic(BaseAgent):
 class Storyteller(BaseAgent):
     def narrate(self, session_memory: list):
         findings_text = "\n\n".join([
-                                        f"### {idx + 1}. On: '{finding.get('question', 'N/A')}'\nSummary: {finding.get('summary', 'No summary available.')}"
+                                        f"### {idx + 1}. On: '{finding.get('question', 'N/A')}'\n**Summary:** {finding.get('summary', 'No summary available.')}"
                                         for idx, finding in enumerate(session_memory)])
         findings_text_escaped = findings_text.replace("{", "{{").replace("}", "}}")
         prompt = f"""
         You are a Lead Data Analyst. Synthesize the findings into a report.
-        Findings:
+        **Findings:**
         ---
         {findings_text_escaped}
         ---
-        Your Output (JSON Object):
-        Generate JSON with two keys: executive_summary (string summary) and detailed_findings (array of objects with question, summary, chart_url, data_preview).
+        **Your Output (JSON Object):**
+        Generate JSON with two keys: `executive_summary` (string summary) and `detailed_findings` (array of objects with `question`, `summary`, `chart_url`, `data_preview`).
         """
         response = self.client.chat.completions.create(model=self.model,
                                                        messages=[{"role": "user", "content": prompt}],
