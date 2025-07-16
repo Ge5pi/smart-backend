@@ -19,8 +19,10 @@ router = APIRouter(
     dependencies=[Depends(auth.get_current_active_user)]
 )
 
+
 @router.post("/connections/", response_model=schemas.DatabaseConnectionInfo)
-def add_database_connection(conn_details: schemas.DatabaseConnectionCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_active_user)):
+def add_database_connection(conn_details: schemas.DatabaseConnectionCreate, db: Session = Depends(database.get_db),
+                            current_user: models.User = Depends(auth.get_current_active_user)):
     try:
         engine = create_engine(conn_details.connection_string, connect_args={'connect_timeout': 10})
         connection = engine.connect()
@@ -30,12 +32,16 @@ def add_database_connection(conn_details: schemas.DatabaseConnectionCreate, db: 
     db_conn = crud.create_db_connection(db, user_id=current_user.id, conn_details=conn_details)
     return db_conn
 
+
 @router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
-def get_user_connections(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_active_user)):
+def get_user_connections(db: Session = Depends(database.get_db),
+                         current_user: models.User = Depends(auth.get_current_active_user)):
     return crud.get_db_connections_by_user(db, user_id=current_user.id)
 
+
 @router.post("/reports/generate/{connection_id}", response_model=schemas.ReportInfo)
-def generate_report(connection_id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_active_user)):
+def generate_report(connection_id: int, db: Session = Depends(database.get_db),
+                    current_user: models.User = Depends(auth.get_current_active_user)):
     db_conn = crud.get_db_connection_by_id(db, connection_id, user_id=current_user.id)
     if not db_conn:
         raise HTTPException(status_code=404, detail="Подключение не найдено")
@@ -47,17 +53,20 @@ def generate_report(connection_id: int, db: Session = Depends(database.get_db), 
     db.refresh(report_record)
     return report_record
 
+
 @router.get("/reports/status/{task_id}")
 def get_report_status(task_id: str):
     task_result = AsyncResult(task_id, app=celery_app)
     response = {"task_id": task_id, "status": task_result.status, "info": task_result.info}
     return response
 
+
 @router.get("/reports/{report_id}", response_model=schemas.Report)
-def get_report_by_id(report_id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_active_user)):
+def get_report_by_id(report_id: int, db: Session = Depends(database.get_db),
+                     current_user: models.User = Depends(auth.get_current_active_user)):
     report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден")
     if report.status != 'COMPLETED':
-         raise HTTPException(status_code=202, detail=f"Отчет еще в процессе генерации. Статус: {report.status}")
+        raise HTTPException(status_code=202, detail=f"Отчет еще в процессе генерации. Статус: {report.status}")
     return report
