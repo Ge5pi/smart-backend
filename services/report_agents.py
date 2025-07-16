@@ -141,6 +141,7 @@ class SQLCoder(BaseAgent):
                 print(f"[SQLCoder:run] RELIABLE EXECUTION: Running extracted SQL directly.\n--- Query ---\n{sql_query}\n-----------")
                 try:
                     with self.engine.connect() as connection:
+                        print(f"[SQLCoder:run] Final SQL Query:\n{sql_query}")
                         df = pd.read_sql(sql_query, connection)
                     print(f"[SQLCoder:run] SUCCESS: Retrieved {len(df)} rows from DB.")
                 except Exception as e:
