@@ -120,59 +120,81 @@ class Orchestrator(BaseAgent):
 class SQLCoder(BaseAgent):
     def __init__(self, engine, **kwargs):
         super().__init__(**kwargs)
-        # --- ИЗМЕНЕНИЕ 1: Добавляем инспектор для получения метаданных ---
+        # Получаем список всех таблиц, кроме служебной alembic
         self.inspector = inspect(engine)
-        self.table_names = self.inspector.get_table_names()
+        self.table_names = [name for name in self.inspector.get_table_names() if name != 'alembic_version']
 
-        # --- ИЗМЕНЕНИЕ 2: Даем агенту "посмотреть" на данные ---
-        # Это самое важное улучшение. Агент увидит реальные данные и форматы.
+        # Создаем объект БД с примерами строк
         self.db = SQLDatabase(
             engine=engine,
-            include_tables=self.table_names,  # Явно указываем, какие таблицы использовать
-            sample_rows_in_table_info=3  # Показываем агенту 3 примера строк из каждой таблицы
+            include_tables=self.table_names,
+            sample_rows_in_table_info=3
         )
         self.llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.API_KEY)
 
     def run(self, question: str) -> dict:
-        prefix = """
-        You are a master SQL data analyst for PostgreSQL. Your task is to write a syntactically correct SQL query to answer the user's question based on the provided schema and sample rows.
-        Think step-by-step. Double-check table and column names. Use date functions for time-based questions.
-        If a query might return no results, think if there is a better way to formulate it.
-        The final answer must ONLY be the result of the query execution.
-        """
-        # --- ИЗМЕНЕНИЕ 3: Передаем verbose=True, чтобы видеть "мысли" агента ---
-        agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=True,
-                                          prefix=prefix, handle_parsing_errors=True)
+        # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: СОЗДАЕМ ПРОМПТ С ПОЛНЫМ КОНТЕКСТОМ ---
+
+        # 1. Получаем полную схему с примерами строк ЗАРАНЕЕ
+        table_info = self.db.get_table_info()
+        print(f"--- Schema Info being passed to Agent ---\n{table_info}\n---")
+
+        # 2. Создаем мощный промпт, который "скармливает" схему агенту
+        agent_prompt = f"""You are an expert PostgreSQL data analyst. Your task is to write a single, syntactically correct SQL query to answer the user's question.
+
+**VERY IMPORTANT**: You have been provided with the complete schema and sample rows for all tables below. Use this information directly. You MUST NOT use the `sql_db_schema` or `sql_db_list_tables` tools. Go straight to writing the query using the `sql_db_query` tool.
+
+**DATABASE SCHEMA AND SAMPLE ROWS:**
+```sql
+{table_info}
+Use code with caution.
+Python
+Think step-by-step to construct the query based on the schema above. Double-check table and column names (e.g., is it user_id or users.id?). Use date functions for time-based questions.
+After thinking, respond with ONLY the final SQL query in the correct tool format.
+"""
+
         try:
+            agent_executor = create_sql_agent(
+                llm=self.llm,
+                db=self.db,
+                agent_type="openai-tools",
+                verbose=True,
+                prefix=agent_prompt,  # Используем наш новый промпт
+                handle_parsing_errors=True
+            )
             result = agent_executor.invoke({"input": question})
             raw_output = result.get('output', '')
             df = pd.DataFrame()
-
-            # --- ИЗМЕНЕНИЕ 4: Надежное извлечение и ЛОГИРОВАНИЕ SQL-запроса ---
             sql_query = "Could not extract SQL query."
+
+            # Более надежный парсинг запроса и результата
             if 'intermediate_steps' in result and result['intermediate_steps']:
-                # Ищем шаг, содержащий SQL
                 for step in result['intermediate_steps']:
+                    # Извлекаем SQL запрос для логирования
                     if isinstance(step, tuple) and len(step) > 0 and hasattr(step[0], 'tool_input'):
                         tool_input = step[0].tool_input
                         if isinstance(tool_input, dict) and 'query' in tool_input:
                             sql_query = tool_input['query']
-                            break
+
+                # Извлекаем результат запроса (DataFrame)
+                last_step_result = result['intermediate_steps'][-1][1]
+                if isinstance(last_step_result, str) and last_step_result.strip().startswith('['):
+                    try:
+                        data_list = ast.literal_eval(last_step_result)
+                        df = pd.DataFrame(data_list)
+                    except Exception as e:
+                        print(f"Failed to parse DataFrame from string: {e}")
+                elif isinstance(last_step_result, list):
+                    df = pd.DataFrame(last_step_result)
 
             print("--- SQL AGENT ---")
             print(f"Question: {question}")
             print(f"Generated SQL: \n{sql_query}")
+            print(f"Rows returned: {len(df)}")
             print("-----------------")
 
-            # Конвертируем результат в DataFrame, если это возможно
-            if 'intermediate_steps' in result and result['intermediate_steps']:
-                last_step_result = result['intermediate_steps'][-1][1]
-                if isinstance(last_step_result, str) and last_step_result.startswith('['):
-                    df = pd.DataFrame(ast.literal_eval(last_step_result))
-                elif isinstance(last_step_result, list):
-                    df = pd.DataFrame(last_step_result)
-
             return {"question": question, "data": df, "raw_output": raw_output, "error": None}
+
         except Exception as e:
             print(f"CRITICAL ERROR in SQLCoder for question '{question}': {e}")
             return {"question": question, "data": pd.DataFrame(), "raw_output": f"An error occurred: {e}",
@@ -185,9 +207,12 @@ class Critic(BaseAgent):
         question = execution_result['question']
         df = execution_result['data']
         if execution_result['error']:
-            return {"is_success": False, "finding": {"question": question, "summary": f"Query failed: {execution_result['error']}"}}
+            return {"is_success": False,
+                    "finding": {"question": question, "summary": f"Query failed: {execution_result['error']}"}}
         if df.empty:
-            return {"is_success": True, "finding": {"question": question, "summary": "Query executed but returned no data.", "chart_url": None, "data_preview": None}, "new_hypotheses": []}
+            return {"is_success": True,
+                    "finding": {"question": question, "summary": "Query executed but returned no data.",
+                                "chart_url": None, "data_preview": None}, "new_hypotheses": []}
 
         chart_url = create_visualization(df, question)
         prompt = f"""
@@ -218,17 +243,21 @@ class Critic(BaseAgent):
             eval_data = json.loads(response.choices[0].message.content)
             return {
                 "is_success": True,
-                "finding": {"question": question, "summary": eval_data.get("summary"), "chart_url": chart_url, "data_preview": df.head().to_dict('records')},
+                "finding": {"question": question, "summary": eval_data.get("summary"), "chart_url": chart_url,
+                            "data_preview": df.head().to_dict('records')},
                 "new_hypotheses": eval_data.get("new_hypotheses", [])
             }
         except Exception as e:
-            return {"is_success": False, "finding": {"question": question, "summary": f"Failed to parse critic evaluation: {e}"}}
+            return {"is_success": False,
+                    "finding": {"question": question, "summary": f"Failed to parse critic evaluation: {e}"}}
 
 
 # --- 4. Агент-Синтезатор ---
 class Storyteller(BaseAgent):
     def narrate(self, session_memory: list):
-        findings_text = "\n\n".join([f"### {idx+1}. On: '{finding['question']}'\n**Summary:** {finding['summary']}" for idx, finding in enumerate(session_memory)])
+        findings_text = "\n\n".join(
+            [f"### {idx + 1}. On: '{finding['question']}'\n**Summary:** {finding['summary']}" for idx, finding in
+             enumerate(session_memory)])
         prompt = f"""
         You are a Lead Data Analyst presenting to an executive. Synthesize the following series of findings into a cohesive report with an executive summary and detailed points.
 
