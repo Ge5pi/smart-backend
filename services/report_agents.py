@@ -21,7 +21,7 @@ s3_client = boto3.client('s3', aws_access_key_id=config.AWS_ACCESS_KEY_ID,
                          region_name=config.AWS_DEFAULT_REGION)
 openai_client = openai.OpenAI(api_key=config.API_KEY)
 
-
+LLM_SQL_DEBUG_MODE=True
 def create_visualization(df: pd.DataFrame, question: str) -> str | None:
     if df.empty or len(df.columns) < 2 or len(df) < 2: return None
     try:
@@ -122,9 +122,19 @@ class SQLCoder(BaseAgent):
                 - Avoid LIMIT unless explicitly required.
                 - If correlating two timestamps (e.g., last file upload vs. last report), use GROUP BY user_id or email.
                 - NEVER select more than 50 rows unless asked. Use filters or aggregations.
+                - Avoid grouping by raw values like email or status unless needed — group by user_id instead.
+                - Prefer safe summaries: COUNT(*), MAX(), AVG(), rather than full raw rows.
+
+                If the question is ambiguous or too open-ended, choose a conservative analytical approach.
 
                 Think step-by-step to construct the query. Respond ONLY with the final SQL query.
                 """
+
+        # DEBUG LOGGING
+        if LLM_SQL_DEBUG_MODE:
+            print("[DEBUG] Prompt sent to LLM:\n", system_prompt)
+
+
         try:
             agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=True, agent_kwargs={"system_message": system_prompt}, handle_parsing_errors=True)
             result = agent_executor.invoke({"input": question})
@@ -137,6 +147,12 @@ class SQLCoder(BaseAgent):
                             sql_query = tool_input['query']
                             break
             df = pd.DataFrame()
+
+            if df.empty:
+                print("[SQLCoder:run] SQL RETURNED EMPTY — QUERY:")
+                print(sql_query)
+                with open("generated_queries.log", "a") as f:
+                    f.write(f"\n[EMPTY RESULT]\nQUESTION: {question}\nSQL:\n{sql_query}\n---\n")
             if sql_query and "Could not extract" not in sql_query:
                 print(f"[SQLCoder:run] RELIABLE EXECUTION: Running extracted SQL directly.\n--- Query ---\n{sql_query}\n-----------")
                 try:
