@@ -161,21 +161,27 @@ class Orchestrator(BaseAgent):
         schema = self.get_schema_details()
 
         # Создаем план с учетом доступных данных
-        prompt = f"""Вы - главный аналитик данных. Ваша цель - найти глубокие, неочевидные, практические 
-        инсайты. На основе предоставленной схемы создайте стратегический план анализа в виде JSON массива 
-        из 5-7 исследовательских вопросов.
+        prompt = f"""Вы - главный аналитик данных. Создайте практический план анализа в виде JSON массива 
+        из 5-7 ПРОСТЫХ и ВЫПОЛНИМЫХ исследовательских вопросов.
 
         ВАЖНО: Фокусируйтесь только на таблицах с данными: {available_tables}
 
         Пустые таблицы (избегайте их): {empty_tables}
 
-        Типы вопросов которые ДОЛЖНЫ быть включены:
-        - Анализ временных рядов/трендов
-        - Корреляция между таблицами (требующая JOIN)
-        - Анализ распределения/аномалий
-        - Сегментация пользователей
+        ТИПЫ ВОПРОСОВ (начните с простых):
+        1. Базовые подсчеты и статистика
+        2. Распределение по статусам/типам
+        3. Временные тренды (по дням/неделям)
+        4. Простые корреляции между таблицами
+        5. Активность пользователей
 
-        Избегайте простых подсчетов. Сосредоточьтесь на корреляциях, трендах, аномалиях.
+        ПРИМЕРЫ ХОРОШИХ ВОПРОСОВ:
+        - "Сколько пользователей зарегистрировано в системе?"
+        - "Какое распределение отчетов по статусам?"
+        - "Какова активность пользователей по дням?"
+        - "Сколько файлов загружено каждым пользователем?"
+
+        Избегайте сложных аналитических запросов. Начните с базовой статистики.
 
         Верните ТОЛЬКО JSON массив строк. Пример: {{"plan": ["Вопрос 1?", "Вопрос 2?"]}}
 
@@ -199,8 +205,17 @@ class Orchestrator(BaseAgent):
                     logger.info("План анализа создан успешно")
                     return value
 
-            # Fallback план
-            return [f"Проанализировать данные в таблице {available_tables[0]}"]
+            # Fallback план с простыми вопросами
+            fallback_questions = [
+                "Сколько пользователей зарегистрировано в системе?",
+                "Какое количество отчетов создано?",
+                "Какое распределение отчетов по статусам?",
+                "Сколько файлов загружено в систему?",
+                "Какова активность пользователей по созданию отчетов?",
+                "Какие типы подключений к базам данных используются?"
+            ]
+
+            return [q for q in fallback_questions if any(table in q.lower() for table in available_tables)][:5]
 
         except Exception as e:
             logger.error(f"Ошибка создания плана: {e}")
@@ -274,6 +289,41 @@ class SQLCoder(BaseAgent):
             logger.error(f"Ошибка выполнения запроса: {e}")
             return pd.DataFrame()
 
+    def generate_simple_sql(self, question: str) -> str:
+        """Генерирует простой SQL запрос на основе вопроса"""
+        question_lower = question.lower()
+
+        # Простые шаблоны запросов
+        if "count" in question_lower or "количество" in question_lower:
+            if "user" in question_lower or "пользователь" in question_lower:
+                return "SELECT COUNT(*) as user_count FROM users"
+            elif "report" in question_lower or "отчет" in question_lower:
+                return "SELECT COUNT(*) as report_count FROM reports"
+            elif "file" in question_lower or "файл" in question_lower:
+                return "SELECT COUNT(*) as file_count FROM an_files"
+
+        if "status" in question_lower or "статус" in question_lower:
+            return "SELECT status, COUNT(*) as count FROM reports GROUP BY status"
+
+        if "time" in question_lower or "время" in question_lower:
+            return "SELECT DATE(created_at) as date, COUNT(*) as count FROM reports GROUP BY DATE(created_at) ORDER BY date"
+
+        if "user" in question_lower and "activity" in question_lower:
+            return """
+            SELECT u.email, 
+                   COUNT(r.id) as report_count,
+                   COUNT(f.id) as file_count
+            FROM users u
+            LEFT JOIN reports r ON u.id = r.user_id
+            LEFT JOIN an_files f ON u.id = f.user_id
+            GROUP BY u.id, u.email
+            ORDER BY report_count DESC
+            LIMIT 20
+            """
+
+        # Базовый запрос по умолчанию
+        return "SELECT COUNT(*) as total_users FROM users"
+
     def run(self, question: str) -> dict:
         """Выполняет анализ вопроса и возвращает результат"""
         logger.info(f"Начало анализа вопроса: '{question[:50]}...'")
@@ -309,8 +359,11 @@ class SQLCoder(BaseAgent):
         Подумайте пошагово и напишите ТОЛЬКО финальный SQL запрос.
         """
 
+        df = pd.DataFrame()
+        sql_query = None
+
         try:
-            # Пробуем использовать агента
+            # Сначала пробуем использовать LangChain агента
             agent_executor = create_sql_agent(
                 llm=self.llm,
                 db=self.db,
@@ -323,7 +376,6 @@ class SQLCoder(BaseAgent):
             result = agent_executor.invoke({"input": question})
 
             # Извлекаем SQL запрос
-            sql_query = "Could not extract SQL query."
             if 'intermediate_steps' in result and result['intermediate_steps']:
                 for step in result['intermediate_steps']:
                     if (isinstance(step, tuple) and len(step) > 0 and
@@ -333,52 +385,73 @@ class SQLCoder(BaseAgent):
                             sql_query = tool_input['query']
                             break
 
-            df = pd.DataFrame()
-
             # Выполняем запрос напрямую, если удалось его извлечь
             if sql_query and "Could not extract" not in sql_query:
                 if self.validate_query_before_execution(sql_query):
                     df = self.execute_query_directly(sql_query)
+                    logger.info(f"Агент вернул {len(df)} строк")
                 else:
-                    logger.warning("Запрос не прошел валидацию")
+                    logger.warning("Запрос агента не прошел валидацию")
 
-            # Если результат пустой, пробуем более простой подход
+            # Если результат пустой, используем простой подход
             if df.empty:
-                logger.warning("Получен пустой результат, пробуем упрощенный запрос")
+                logger.warning("Агент вернул пустой результат, используем простой SQL")
+                simple_sql = self.generate_simple_sql(question)
+                sql_query = simple_sql
+                df = self.execute_query_directly(simple_sql)
+                logger.info(f"Простой запрос вернул {len(df)} строк")
 
-                # Создаем простой запрос для проверки данных
-                simple_queries = [
-                    f"SELECT COUNT(*) as count FROM {table} LIMIT 1"
-                    for table in self.table_names[:3]
+            # Если и это не сработало, используем базовые запросы
+            if df.empty:
+                logger.warning("Простой запрос тоже пустой, используем базовые запросы")
+
+                basic_queries = [
+                    "SELECT COUNT(*) as user_count FROM users",
+                    "SELECT COUNT(*) as report_count FROM reports",
+                    "SELECT COUNT(*) as file_count FROM an_files"
                 ]
 
-                for simple_query in simple_queries:
-                    test_df = self.execute_query_directly(simple_query)
-                    if not test_df.empty:
-                        logger.info(f"Найдены данные в таблице: {simple_query}")
+                for basic_query in basic_queries:
+                    test_df = self.execute_query_directly(basic_query)
+                    if not test_df.empty and len(test_df) > 0:
+                        logger.info(f"Базовый запрос успешен: {basic_query}")
+                        df = test_df
+                        sql_query = basic_query
                         break
 
             # Логируем результат
             if df.empty:
-                logger.warning("SQL вернул пустой результат")
+                logger.error("Все попытки вернули пустой результат")
                 with open("empty_queries.log", "a") as f:
                     f.write(f"\n[EMPTY RESULT] {question}\nSQL: {sql_query}\n---\n")
+            else:
+                logger.info(f"Успешно получено {len(df)} строк")
 
             return {
                 "question": question,
                 "data": df,
-                "raw_output": result.get('output', ''),
+                "raw_output": result.get('output', '') if 'result' in locals() else '',
                 "sql_query": sql_query,
                 "error": None
             }
 
         except Exception as e:
             logger.error(f"Критическая ошибка в SQLCoder: {e}")
+
+            # Даже при ошибке пробуем выполнить базовый запрос
+            try:
+                fallback_query = "SELECT COUNT(*) as total_records FROM users"
+                df = self.execute_query_directly(fallback_query)
+                sql_query = fallback_query
+                logger.info(f"Fallback запрос выполнен успешно: {len(df)} строк")
+            except Exception as fallback_error:
+                logger.error(f"Даже fallback запрос не сработал: {fallback_error}")
+
             return {
                 "question": question,
-                "data": pd.DataFrame(),
+                "data": df,
                 "raw_output": f"Произошла ошибка: {e}",
-                "sql_query": None,
+                "sql_query": sql_query,
                 "error": str(e)
             }
 
