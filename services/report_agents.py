@@ -120,31 +120,63 @@ class Orchestrator(BaseAgent):
 class SQLCoder(BaseAgent):
     def __init__(self, engine, **kwargs):
         super().__init__(**kwargs)
-        self.db = SQLDatabase(engine=engine)
+        # --- ИЗМЕНЕНИЕ 1: Добавляем инспектор для получения метаданных ---
+        self.inspector = inspect(engine)
+        self.table_names = self.inspector.get_table_names()
+
+        # --- ИЗМЕНЕНИЕ 2: Даем агенту "посмотреть" на данные ---
+        # Это самое важное улучшение. Агент увидит реальные данные и форматы.
+        self.db = SQLDatabase(
+            engine=engine,
+            include_tables=self.table_names,  # Явно указываем, какие таблицы использовать
+            sample_rows_in_table_info=3  # Показываем агенту 3 примера строк из каждой таблицы
+        )
         self.llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.API_KEY)
 
     def run(self, question: str) -> dict:
         prefix = """
-        You are a master SQL data analyst. Your task is to write a syntactically correct SQL query to answer the user's question.
+        You are a master SQL data analyst for PostgreSQL. Your task is to write a syntactically correct SQL query to answer the user's question based on the provided schema and sample rows.
         Think step-by-step. Double-check table and column names. Use date functions for time-based questions.
+        If a query might return no results, think if there is a better way to formulate it.
         The final answer must ONLY be the result of the query execution.
         """
-        agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=False, prefix=prefix, handle_parsing_errors=True)
+        # --- ИЗМЕНЕНИЕ 3: Передаем verbose=True, чтобы видеть "мысли" агента ---
+        agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=True,
+                                          prefix=prefix, handle_parsing_errors=True)
         try:
             result = agent_executor.invoke({"input": question})
             raw_output = result.get('output', '')
             df = pd.DataFrame()
 
+            # --- ИЗМЕНЕНИЕ 4: Надежное извлечение и ЛОГИРОВАНИЕ SQL-запроса ---
+            sql_query = "Could not extract SQL query."
             if 'intermediate_steps' in result and result['intermediate_steps']:
-                # Более надежный парсинг из вывода LangChain
-                query = result['intermediate_steps'][0][1].get('query', result['intermediate_steps'][0][1])
-                with self.db._engine.connect() as connection:
-                    df = pd.read_sql(query, connection)
+                # Ищем шаг, содержащий SQL
+                for step in result['intermediate_steps']:
+                    if isinstance(step, tuple) and len(step) > 0 and hasattr(step[0], 'tool_input'):
+                        tool_input = step[0].tool_input
+                        if isinstance(tool_input, dict) and 'query' in tool_input:
+                            sql_query = tool_input['query']
+                            break
+
+            print("--- SQL AGENT ---")
+            print(f"Question: {question}")
+            print(f"Generated SQL: \n{sql_query}")
+            print("-----------------")
+
+            # Конвертируем результат в DataFrame, если это возможно
+            if 'intermediate_steps' in result and result['intermediate_steps']:
+                last_step_result = result['intermediate_steps'][-1][1]
+                if isinstance(last_step_result, str) and last_step_result.startswith('['):
+                    df = pd.DataFrame(ast.literal_eval(last_step_result))
+                elif isinstance(last_step_result, list):
+                    df = pd.DataFrame(last_step_result)
 
             return {"question": question, "data": df, "raw_output": raw_output, "error": None}
         except Exception as e:
             print(f"CRITICAL ERROR in SQLCoder for question '{question}': {e}")
-            return {"question": question, "data": pd.DataFrame(), "raw_output": f"An error occurred: {e}", "error": str(e)}
+            return {"question": question, "data": pd.DataFrame(), "raw_output": f"An error occurred: {e}",
+                    "error": str(e)}
 
 
 # --- 3. Агент-Критик ---
