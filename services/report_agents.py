@@ -99,7 +99,7 @@ class Orchestrator(BaseAgent):
         """
         response = self.client.chat.completions.create(
             model="o4-mini", messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}, temperature=0.2
+            response_format={"type": "json_object"}
         )
         try:
             data = json.loads(response.choices[0].message.content)
@@ -130,7 +130,7 @@ class SQLCoder(BaseAgent):
             include_tables=self.table_names,
             sample_rows_in_table_info=3
         )
-        self.llm = ChatOpenAI(model="o4-mini", temperature=0, api_key=config.API_KEY)
+        self.llm = ChatOpenAI(model="o4-mini", api_key=config.API_KEY)
 
     def run(self, question: str) -> dict:
 
