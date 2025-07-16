@@ -1,295 +1,222 @@
-# services/agents.py
+# agents.py
 import ast
-import json
 import io
+import json
 import re
 import uuid
-import logging
-from typing import List, Dict, Any, Tuple, Optional, Union
 
-import pandas as pd
+import boto3
 import openai
-from sqlalchemy import inspect, create_engine
-from sqlalchemy.engine import Engine
-
-# LangChain imports
-from langchain_openai import ChatOpenAI
+import pandas as pd
+import plotly.express as px
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_community.utilities.sql_database import SQLDatabase
-import plotly.express as px
-import plotly.io as pio
+from langchain_openai import ChatOpenAI
+from sqlalchemy import inspect
 
-# Local imports
 import config
-import boto3
 
-# --- ИЗМЕНЕНИЕ: Настройка логирования ---
-# Заменяет все print() на структурированное логирование.
-# Ошибки будут писаться в консоль/файл с полной информацией,
-# а пользователь увидит только безопасное сообщение.
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# --- ИЗМЕНЕНИЕ: Централизованные константы ---
-# Упрощает замену моделей и управление параметрами
-O4_MINI_MODEL = "o4-mini"
-
-# --- Клиент S3 (без изменений) ---
+# --- Клиенты и утилиты ---
 s3_client = boto3.client(
     's3',
     aws_access_key_id=config.AWS_ACCESS_KEY_ID,
     aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
     region_name=config.AWS_DEFAULT_REGION
 )
+openai_client = openai.OpenAI(api_key=config.API_KEY)
 
 
-# --- Агент 1: Получение схемы (без существенных изменений) ---
-def get_schema_details(engine: Engine) -> str:
-    """Возвращает строковое представление схемы базы данных."""
-    try:
-        inspector = inspect(engine)
-        schema_info = []
-        table_names = inspector.get_table_names()
-        for table_name in table_names:
-            columns = [col['name'] for col in inspector.get_columns(table_name)]
-            schema_info.append(f"Table '{table_name}' with columns: {columns}")
-        return "\n".join(schema_info) if schema_info else "No tables found in the database."
-    except Exception as e:
-        logger.error(f"Failed to get schema details: {e}", exc_info=True)
-        return "Error: Could not retrieve database schema."
-
-
-# --- Агент 2: Планировщик анализа (улучшено логирование и обработка JSON) ---
-def create_analysis_plan(schema_details: str, client: openai.OpenAI) -> List[str]:
-    """
-    Создает план анализа, фокусируясь на поиске неочевидных инсайтов,
-    корреляций и аномалий.
-    """
-    prompt = f"""
-    You are an expert data analyst. Your goal is to find **interesting and non-obvious insights**
-    hidden in the data. Based on the database schema provided, create a step-by-step analysis plan.
-
-    **Instructions for the plan:**
-    - The plan must consist of 5-7 analytical questions.
-    - Questions should be complex and aim to uncover relationships, not just state simple facts.
-    - **Include at least ONE question about trends over time.**
-    - **Include at least ONE question that requires correlating data from two different tables.**
-    - **Include at least ONE question about finding distributions or anomalies.**
-
-    Return the plan as a single JSON array of strings, like this: ["Question 1", "Question 2", ...].
-
-    Database Schema:
-    {schema_details}
-    """
-    try:
-        response = client.chat.completions.create(
-            model=O4_MINI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        # --- ИЗМЕНЕНИЕ: Более надежный парсинг JSON ---
-        content = response.choices[0].message.content
-        result_data = json.loads(content)
-
-        # Модель может вернуть {"plan": [...]} или просто [...]
-        if isinstance(result_data, dict):
-            # Ищем первый ключ, значение которого является списком
-            for key, value in result_data.items():
-                if isinstance(value, list):
-                    return value
-        elif isinstance(result_data, list):
-            return result_data
-
-        raise ValueError("The model did not return a list in the JSON response.")
-    except Exception as e:
-        # --- ИЗМЕНЕНИЕ: Логируем ошибку, а не выводим ее ---
-        logger.error(f"Error creating analysis plan: {e}\nRaw response: {content}", exc_info=True)
-        # Возвращаем безопасный план по умолчанию
-        return ["Count the number of rows in each table.", "Describe the main tables."]
-
-
-# --- Агент 3: SQL-аналитик (значительно переработан) ---
-def run_sql_query_agent(engine: Engine, question: str) -> Tuple[pd.DataFrame, str]:
-    """
-    Выполняет SQL-запрос с помощью LangChain агента.
-    Улучшена обработка ошибок и парсинг результата.
-    """
-    try:
-        db = SQLDatabase(engine=engine)
-        llm = ChatOpenAI(model=O4_MINI_MODEL, temperature=0) # Убрали "креативность" для точности SQL
-
-        # --- ИЗМЕНЕНИЕ: Слегка улучшенный промпт ---
-        agent_prompt_prefix = """
-        You are an expert SQL data analyst. Your task is to answer the user's question about the database.
-        - First, think step-by-step to understand the user's intent.
-        - Write a syntactically correct SQL query for the user's question.
-        - If a question requires joining data, you must write a query with a JOIN.
-        - When dealing with dates, use appropriate date functions.
-        - After executing the query, do not just return the data. Your final answer should be a concise summary of the findings.
-        - Always double-check your query before execution.
-        """
-
-        agent_executor = create_sql_agent(
-            llm,
-            db=db,
-            agent_type="openai-tools",
-            verbose=False, # Отключаем verbose в продакшене, чтобы не засорять логи
-            prefix=agent_prompt_prefix
-        )
-
-        result = agent_executor.invoke({"input": question})
-        final_output_text = result.get('output', '')
-
-        # --- ИЗМЕНЕНИЕ: Более надежная стратегия парсинга ---
-        raw_data = None
-        # Стратегия 1: Искать в промежуточных шагах (самый надежный источник)
-        if 'intermediate_steps' in result and result['intermediate_steps']:
-            # Данные обычно в последнем шаге
-            raw_data = result['intermediate_steps'][-1][1]
-
-        # Стратегия 2: Если в шагах нет, искать в финальном тексте
-        if not raw_data:
-            raw_data = final_output_text
-
-        if isinstance(raw_data, list) and raw_data:
-            # Если это уже готовый список словарей или кортежей
-            return pd.DataFrame(raw_data), final_output_text
-        elif isinstance(raw_data, str):
-            # Если это строка, пытаемся извлечь из нее список
-            # Регулярное выражение для поиска [...]
-            match = re.search(r"\[\s*\(.*?\)\s*\]|\[\s*\{.*?\}\s*\]", raw_data, re.DOTALL)
-            if match:
-                try:
-                    # Используем безопасный ast.literal_eval для преобразования строки в Python объект
-                    data_list = ast.literal_eval(match.group(0))
-                    if data_list:
-                        return pd.DataFrame(data_list), final_output_text
-                except (ValueError, SyntaxError) as e:
-                    logger.warning(f"Could not parse string to list: {e}. Raw string part: {match.group(0)}")
-
-        # Если ничего не удалось распарсить, возвращаем пустой DataFrame, но с текстом
-        return pd.DataFrame(), final_output_text
-
-    except Exception as e:
-        # --- ИЗМЕНЕНИЕ: Логируем полную ошибку для отладки ---
-        logger.error(f"Critical error in SQL agent for question '{question}': {e}", exc_info=True)
-        # --- А пользователю возвращаем простое сообщение ---
-        error_message = f"Произошла критическая ошибка при выполнении SQL-запроса. Анализ не может быть продолжен."
-        return pd.DataFrame(), error_message
-
-
-# --- Агент 4: Визуализатор (улучшенная логика выбора графика) ---
-def create_visualization(df: pd.DataFrame, question: str) -> Optional[str]:
-    """
-    Создает визуализацию на основе DataFrame и загружает на S3.
-    Автоматически выбирает тип графика на основе типов данных.
-    """
-    if df.empty or len(df.columns) < 2:
+def create_visualization(df: pd.DataFrame, question: str) -> str | None:
+    """Создает визуализацию и загружает в S3, возвращая публичную ссылку."""
+    if df.empty or len(df.columns) < 2 or len(df) < 2:
         return None
-
     try:
-        # --- ИЗМЕНЕНИЕ: Умное определение типа графика ---
         x_col, y_col = df.columns[0], df.columns[1]
+        x_is_date = pd.api.types.is_datetime64_any_dtype(df[x_col])
+        y_is_numeric = pd.api.types.is_numeric_dtype(df[y_col])
+
         fig = None
-
-        # Проверяем типы данных для более точного выбора графика
-        is_x_date = pd.api.types.is_datetime64_any_dtype(df[x_col])
-        is_x_numeric = pd.api.types.is_numeric_dtype(df[x_col])
-        is_y_numeric = pd.api.types.is_numeric_dtype(df[y_col])
-
-        if is_x_date and is_y_numeric:
-            # Тренд по времени -> линейный график
+        if x_is_date and y_is_numeric:
             fig = px.line(df, x=x_col, y=y_col, title=question, markers=True)
-        elif is_x_numeric and is_y_numeric:
-            # Корреляция двух чисел -> диаграмма рассеяния
-            fig = px.scatter(df, x=x_col, y=y_col, title=question)
-        else:
-            # Категориальные данные -> столбчатая диаграмма (по умолчанию)
-            fig = px.bar(df, x=x_col, y=y_col, title=question)
+        elif y_is_numeric:
+            fig = px.bar(df.sort_values(by=y_col, ascending=False).head(20), x=x_col, y=y_col, title=question)
 
         if fig:
             img_bytes = io.BytesIO()
-            pio.write_image(img_bytes, fig, format="png") # Используем pio для большей надежности
+            fig.write_image(img_bytes, format="png", scale=2)
             img_bytes.seek(0)
-
             file_name = f"charts/{uuid.uuid4()}.png"
             s3_client.upload_fileobj(
-                img_bytes,
-                config.S3_BUCKET_NAME,
-                file_name,
-                ExtraArgs={'ContentType': 'image/png', 'ACL': 'public-read'} # Делаем файл публичным
+                img_bytes, config.S3_BUCKET_NAME, file_name,
+                ExtraArgs={'ContentType': 'image/png', 'ACL': 'public-read'}
             )
-            # --- ИЗМЕНЕНИЕ: Формирование URL-адреса, совместимого с разными регионами ---
-            return f"https://{config.S3_BUCKET_NAME}.s3.amazonaws.com/{file_name}"
-
+            return f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_DEFAULT_REGION}.amazonaws.com/{file_name}"
         return None
     except Exception as e:
-        logger.error(f"Error creating visualization: {e}", exc_info=True)
+        print(f"Error creating visualization for question '{question}': {e}")
         return None
 
 
-# --- Агент 5: Интерпретатор (улучшен промпт для обработки ошибок) ---
-def create_narrative(
-    question: str,
-    df: pd.DataFrame,
-    chart_url: Optional[str],
-    raw_text: str,
-    client: openai.OpenAI
-) -> str:
-    """
-    Генерирует человекочитаемое описание результатов или ошибки.
-    """
-    prompt = ""
-    # Сценарий 1: Есть данные
-    if not df.empty:
-        df_markdown = df.head(10).to_markdown(index=False)
+# --- Базовый класс агента ---
+class BaseAgent:
+    def __init__(self, model="gpt-4o-mini"):
+        self.client = openai_client
+        self.model = model
+
+
+# --- 1. Агент-Оркестратор ---
+class Orchestrator(BaseAgent):
+    def __init__(self, engine, **kwargs):
+        super().__init__(**kwargs)
+        self.engine = engine
+
+    def get_schema_details(self):
+        inspector = inspect(self.engine)
+        schema_info = []
+        for table_name in inspector.get_table_names():
+            columns = [f"{col['name']} ({col['type']})" for col in inspector.get_columns(table_name)]
+            schema_info.append(f"Table '{table_name}' with columns: {columns}")
+        return "\n".join(schema_info) or "No tables found."
+
+    def create_initial_plan(self):
+        schema = self.get_schema_details()
         prompt = f"""
-        As a data analyst, provide a clear, concise narrative based on the provided data.
+        You are a principal data analyst. Your goal is to uncover deep, non-obvious, actionable insights.
+        Based on the provided schema, create a strategic analysis plan as a JSON array of 5-7 probing questions.
+        Focus on correlations, trends, anomalies, and user segmentation. Avoid simple counts.
 
-        **Original Question:** {question}
+        **MUST-INCLUDE Question Types:**
+        - Time-Series/Trend Analysis.
+        - Cross-Table Correlation (requiring a JOIN).
+        - Distribution/Anomaly Detection.
 
-        **Data Summary (first 10 rows):**
-        ```markdown
-        {df_markdown}
+        Return ONLY the JSON array of strings.
+
+        **Database Schema:**
         ```
-
-        **Visualization:** A {'line chart' if chart_url and 'line' in chart_url else 'bar chart'} is available at: {chart_url if chart_url else "No chart was generated."}
-
-        **Your Narrative:**
-        - Start with a direct answer to the question.
-        - Briefly explain the findings shown in the data and the chart.
-        - Conclude with a key insight or takeaway.
+        {schema}
+        ```
         """
-    # Сценарий 2: Данных нет, но есть текстовый ответ (возможно, ошибка)
-    elif raw_text:
-        # --- ИЗМЕНЕНИЕ: Улучшенный промпт, чтобы скрыть технические детали от пользователя ---
-        prompt = f"""
-        You are a helpful assistant. An attempt to answer the question "{question}" failed to produce structured data.
-        The system returned the following text.
-
-        **Your Task:**
-        1. Analyze the text below.
-        2. **Do not show the raw text to the user.**
-        3. Explain in simple, non-technical terms what happened. If it's an error, suggest what might have gone wrong (e.g., "The query could not be completed," or "The data for this question may not exist").
-        4. Provide a friendly, helpful message to the user.
-
-        **Agent's Raw Text:**
-        ---
-        {raw_text}
-        ---
-
-        **Your Summary for the User:**
-        """
-    # Сценарий 3: Нет ни данных, ни текста
-    else:
-        return "The analysis did not return any data or text. It's not possible to provide a summary."
-
-    try:
-        response = client.chat.completions.create(
-            model=O4_MINI_MODEL,
-            messages=[{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}, temperature=0.2
         )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Error creating narrative: {e}", exc_info=True)
-        return "Failed to generate a narrative for the findings."
+        try:
+            data = json.loads(response.choices[0].message.content)
+            for key, value in data.items():
+                if isinstance(value, list): return value
+            return ["Analyze the main table."]
+        except Exception as e:
+            print(f"Error decoding initial plan, using fallback: {e}")
+            return ["Count rows in all tables.", "Describe the schema."]
+
+    def process_evaluation(self, evaluation: dict, session_memory: list, analysis_plan: list):
+        session_memory.append(evaluation['finding'])
+        if evaluation.get('new_hypotheses'):
+            analysis_plan[:0] = evaluation['new_hypotheses']
+
+
+# --- 2. Агент-Исполнитель SQL ---
+class SQLCoder(BaseAgent):
+    def __init__(self, engine, **kwargs):
+        super().__init__(**kwargs)
+        self.db = SQLDatabase(engine=engine)
+        self.llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.API_KEY)
+
+    def run(self, question: str) -> dict:
+        prefix = """
+        You are a master SQL data analyst. Your task is to write a syntactically correct SQL query to answer the user's question.
+        Think step-by-step. Double-check table and column names. Use date functions for time-based questions.
+        The final answer must ONLY be the result of the query execution.
+        """
+        agent_executor = create_sql_agent(llm=self.llm, db=self.db, agent_type="openai-tools", verbose=False, prefix=prefix, handle_parsing_errors=True)
+        try:
+            result = agent_executor.invoke({"input": question})
+            raw_output = result.get('output', '')
+            df = pd.DataFrame()
+
+            if 'intermediate_steps' in result and result['intermediate_steps']:
+                # Более надежный парсинг из вывода LangChain
+                query = result['intermediate_steps'][0][1].get('query', result['intermediate_steps'][0][1])
+                with self.db._engine.connect() as connection:
+                    df = pd.read_sql(query, connection)
+
+            return {"question": question, "data": df, "raw_output": raw_output, "error": None}
+        except Exception as e:
+            print(f"CRITICAL ERROR in SQLCoder for question '{question}': {e}")
+            return {"question": question, "data": pd.DataFrame(), "raw_output": f"An error occurred: {e}", "error": str(e)}
+
+
+# --- 3. Агент-Критик ---
+class Critic(BaseAgent):
+    def evaluate(self, execution_result: dict):
+        question = execution_result['question']
+        df = execution_result['data']
+        if execution_result['error']:
+            return {"is_success": False, "finding": {"question": question, "summary": f"Query failed: {execution_result['error']}"}}
+        if df.empty:
+            return {"is_success": True, "finding": {"question": question, "summary": "Query executed but returned no data.", "chart_url": None, "data_preview": None}, "new_hypotheses": []}
+
+        chart_url = create_visualization(df, question)
+        prompt = f"""
+        You are a Senior Data Analyst and Insight Generator. Analyze the result of a SQL query, extract meaningful insights, and brainstorm new questions to dig deeper.
+
+        **Analysis Context:**
+        - **Original Question:** "{question}"
+        - **Data Result (first 10 rows):**
+        ```
+        {df.head(10).to_markdown(index=False)}
+        ```
+        - **Data Shape:** {df.shape[0]} rows, {df.shape[1]} columns.
+        - **Visualization:** A chart is available at: {chart_url or "No chart."}
+
+        **Your Tasks (Respond in valid JSON format):**
+        1.  **`summary` (string):** Write a concise, insightful summary of the findings. Interpret the data, don't just state it. Mention the chart.
+        2.  **`new_hypotheses` (array of strings):** Generate 1-3 new, intelligent follow-up questions to explore *why* the data looks this way.
+            - Bad hypothesis: "Show me the data again".
+            - Good hypothesis: "The spike in June registrations is interesting. Let's analyze the `user_id`s created that month to see if it's from a single source."
+
+        **OUTPUT MUST BE A VALID JSON OBJECT.**
+        """
+        response = self.client.chat.completions.create(
+            model=self.model, messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        try:
+            eval_data = json.loads(response.choices[0].message.content)
+            return {
+                "is_success": True,
+                "finding": {"question": question, "summary": eval_data.get("summary"), "chart_url": chart_url, "data_preview": df.head().to_dict('records')},
+                "new_hypotheses": eval_data.get("new_hypotheses", [])
+            }
+        except Exception as e:
+            return {"is_success": False, "finding": {"question": question, "summary": f"Failed to parse critic evaluation: {e}"}}
+
+
+# --- 4. Агент-Синтезатор ---
+class Storyteller(BaseAgent):
+    def narrate(self, session_memory: list):
+        findings_text = "\n\n".join([f"### {idx+1}. On: '{finding['question']}'\n**Summary:** {finding['summary']}" for idx, finding in enumerate(session_memory)])
+        prompt = f"""
+        You are a Lead Data Analyst presenting to an executive. Synthesize the following series of findings into a cohesive report with an executive summary and detailed points.
+
+        **Analytical Findings:**
+        ---
+        {findings_text}
+        ---
+
+        **Your Output (JSON Object):**
+        Generate a JSON with two keys: `executive_summary` and `detailed_findings`.
+        1.  **`executive_summary` (string):** High-level, 3-4 paragraph summary. Start with the most impactful conclusion and recommendations.
+        2.  **`detailed_findings` (array of objects):** Reuse the provided info. Each object should have keys: `question`, `summary`, `chart_url`, `data_preview`.
+
+        **Tone:** Confident, insightful, business-oriented. Focus on the 'so what'. Respond ONLY with the JSON.
+        """
+        response = self.client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        try:
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            return {"executive_summary": "Failed to generate the final report.", "detailed_findings": session_memory}

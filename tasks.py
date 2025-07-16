@@ -1,83 +1,77 @@
 # tasks.py
-from celery_worker import celery_app
-from database import SessionLocal
-import crud
+from celery.exceptions import Ignore
 from sqlalchemy import create_engine
-import openai
-from services import agents  # Импортируем наших агентов
-import config
 
-# Инициализируем OpenAI клиент один раз
-client = openai.OpenAI(api_key=config.API_KEY)
+import crud
+import database
+import security_utils
+from agents import Orchestrator, SQLCoder, Critic, Storyteller
+from celery_worker import celery_app
 
 
-@celery_app.task(bind=True)
-def generate_full_report(self, connection_id: int, user_id: int, report_id: int):
-    """
-    Основная задача для генерации отчета.
-    Выполняет полный цикл анализа и сохраняет результат в БД.
-    """
-    db = SessionLocal()
+@celery_app.task(bind=True, time_limit=3600, name='tasks.generate_advanced_report')
+def generate_advanced_report(self, connection_id: int, user_id: int, report_id: int):
+    """Основная Celery-задача для запуска продвинутого итеративного анализа."""
+    db_session = next(database.get_db())
     try:
-        # 1. Получение подключения к БД
-        self.update_state(state='IN_PROGRESS', meta={'status': 'Подключаюсь к базе данных...'})
-        conn_string = crud.get_decrypted_connection_string(db, connection_id, user_id)
-        if not conn_string:
-            raise ValueError("Не удалось получить доступ к базе данных.")
-        engine = create_engine(conn_string)
+        self.update_state(state='SETUP', meta={'progress': 'Инициализация анализа...'})
+        connection_string = crud.get_decrypted_connection_string(db_session, connection_id, user_id)
+        if not connection_string:
+            crud.update_report(db_session, report_id, "FAILED", {"error": "Подключение к БД не найдено."})
+            raise Ignore()
 
-        # 2. Анализ схемы
-        self.update_state(state='IN_PROGRESS', meta={'status': 'Анализирую структуру данных...'})
-        schema = agents.get_schema_details(engine)
-        if not schema or schema == "No tables found.":
-            raise ValueError("В базе данных не найдено таблиц для анализа.")
+        engine = create_engine(connection_string, connect_args={'connect_timeout': 20})
 
-        # 3. Создание плана анализа
-        self.update_state(state='IN_PROGRESS', meta={'status': 'Составляю план анализа...'})
-        plan = agents.create_analysis_plan(schema, client)
+        # Инициализация команды агентов
+        orchestrator = Orchestrator(engine)
+        sql_coder = SQLCoder(engine)
+        critic = Critic()
+        storyteller = Storyteller()
 
-        # 4. Выполнение плана
-        report_sections = []
-        total_steps = len(plan)
-        for i, question in enumerate(plan):
-            # Обновляем статус для фронтенда
-            self.update_state(state='IN_PROGRESS', meta={'status': f'Шаг {i + 1}/{total_steps}: {question}'})
+        self.update_state(state='PLANNING', meta={'progress': 'Генерация начального плана...'})
+        analysis_plan = orchestrator.create_initial_plan()
+        session_memory = []
 
-            # Выполняем запросы и генерируем контент
-            df, raw_text = agents.run_sql_query_agent(engine, question)
+        total_tasks = len(analysis_plan)
+        completed_tasks = 0
+        max_iterations = 20
+        current_iteration = 0
 
-            chart_url = agents.create_visualization(df, question)
+        while analysis_plan and current_iteration < max_iterations:
+            current_question = analysis_plan.pop(0)
+            current_iteration += 1
 
-            # Передаем и DataFrame, и сырой текст в create_narrative
-            narrative = agents.create_narrative(question, df, chart_url, raw_text, client)
+            progress_percent = int((completed_tasks / total_tasks) * 100) if total_tasks > 0 else 0
+            self.update_state(
+                state='ANALYZING',
+                meta={'progress': f"Шаг {completed_tasks + 1}/{total_tasks}: {current_question}",
+                      'percent': progress_percent}
+            )
 
-            report_sections.append({
-                "title": question,
-                "narrative": narrative,
-                "chart_url": chart_url,
-                "data_preview": df.head(5).to_dict(orient='records') if not df.empty else []
-            })
+            execution_result = sql_coder.run(current_question)
+            critic_evaluation = critic.evaluate(execution_result)
 
-        # 5. Формирование и сохранение финального отчета
-        self.update_state(state='IN_PROGRESS', meta={'status': 'Формирую финальный отчет...'})
-        final_report_content = {
-            "title": f"Аналитический отчет по подключению #{connection_id}",
-            "sections": report_sections
-        }
-        crud.update_report(db, report_id=report_id, status="COMPLETED", content=final_report_content)
+            if critic_evaluation['is_success']:
+                orchestrator.process_evaluation(critic_evaluation, session_memory, analysis_plan)
+                completed_tasks += 1
+                total_tasks = completed_tasks + len(analysis_plan)
+            else:
+                session_memory.append(critic_evaluation['finding'])
+                completed_tasks += 1
 
-        # Возвращаем финальный статус
-        return {'status': 'COMPLETED', 'report_id': report_id}
+        self.update_state(state='SYNTHESIZING', meta={'progress': 'Формирование финального отчета...', 'percent': 99})
+        if not session_memory:
+            final_report = {"executive_summary": "Анализ не дал результатов.", "detailed_findings": []}
+        else:
+            final_report = storyteller.narrate(session_memory)
+
+        crud.update_report(db_session, report_id, "COMPLETED", final_report)
+        self.update_state(state='SUCCESS', meta={'progress': 'Готово!', 'percent': 100})
 
     except Exception as e:
-        # В случае любой ошибки логируем ее и обновляем статус
-        print(f"Критическая ошибка в задаче генерации отчета (report_id: {report_id}): {e}")
-        error_message = f"Произошла ошибка: {str(e)}"
-        crud.update_report(db, report_id=report_id, status="FAILED", content={"error": error_message})
-        # Передаем исключение в Celery, чтобы он тоже пометил задачу как FAILED
-        # и фронтенд получил корректный статус
-        self.update_state(state='FAILURE', meta={'status': error_message})
+        print(f"FATAL error in advanced report task for report_id {report_id}: {e}")
+        crud.update_report(db_session, report_id, "FAILED",
+                           {"error": "Произошла критическая ошибка.", "details": str(e)})
         raise e
     finally:
-        # Гарантированно закрываем сессию с БД
-        db.close()
+        db_session.close()
