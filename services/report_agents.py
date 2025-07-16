@@ -133,8 +133,11 @@ class SQLCoder(BaseAgent):
                     print(f"[SQLCoder:run] RELIABLE EXECUTION FAILED: {e}")
                     return {"question": question, "data": df, "raw_output": f"Query execution failed: {e}", "error": str(e)}
 
+            print("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", df.head())
+
             return_value = {"question": question, "data": df, "raw_output": result.get('output', ''), "error": None}
-            print(f"[SQLCoder:run] FINAL RETURN. DataFrame rows: {len(return_value['data'])}. Returning object to task loop.")
+            print(f"[SQLCoder:run] FINAL RETURN. DataFrame rows: {len(return_value['data'])}. Returning object to "
+                  f"task loop.")
             return return_value
 
         except Exception as e:
