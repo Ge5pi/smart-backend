@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from celery.result import AsyncResult
 
-from tasks import generate_advanced_report  # <-- Импортируем новую задачу
+from tasks import generate_advanced_report
 from celery_worker import celery_app
 import crud
 import schemas
