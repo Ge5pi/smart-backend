@@ -68,7 +68,7 @@ def generate_advanced_report(self, connection_id: int, user_id: int, report_id: 
             # с более богатыми данными от Critic.
             if critic_evaluation.get('is_success'):
                 print("[TASK LOOP] Invoking Orchestrator to process evaluation.")
-                orchestrator.process_evaluation(critic_evaluation, session_memory, analysis_plan)
+                orchestrator.process_evaluation(critic_evaluation, session_memory, analysis_plan, current_question)
                 print(
                     f"[TASK LOOP] Orchestrator processed. Findings in memory: {len(session_memory)}. New hypotheses added: {len(critic_evaluation.get('new_hypotheses', []))}")
             else:

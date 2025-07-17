@@ -128,6 +128,7 @@ class Orchestrator(BaseAgent):
         self.engine = engine
         self.schema_cache = None
         self.table_stats_cache = None
+        self.processed_questions = set()
 
     def get_comprehensive_schema(self) -> Dict[str, Any]:
         """Получает полную информацию о схеме с примерами данных"""
@@ -269,18 +270,33 @@ class Orchestrator(BaseAgent):
 
         return plan[:12]  # ограничим количество для первых итераций
 
-    def process_evaluation(self, evaluation: dict, session_memory: list, analysis_plan: list):
-        """Обрабатывает результаты оценки и добавляет новые гипотезы"""
-        logger.info("Обработка результатов оценки")
+    def process_evaluation(self, evaluation: dict, session_memory: list, analysis_plan: list, current_question: str):
+        """Обрабатывает результаты оценки, добавляет новые гипотезы и избегает повторений."""
+        logger.info("Обработка результатов оценки с контролем состояния...")
+
+        # --- НОВОЕ: Запоминаем вопрос, который только что обработали ---
+        self.processed_questions.add(current_question)
 
         if evaluation.get('finding'):
             session_memory.append(evaluation['finding'])
 
-        if evaluation.get('new_hypotheses'):
-            # Добавляем новые гипотезы в начало плана
-            new_hypotheses = evaluation['new_hypotheses'][:3]  # Ограничиваем количество
-            analysis_plan[:0] = new_hypotheses
-            logger.info(f"Добавлено {len(new_hypotheses)} новых гипотез")
+        new_hypotheses = evaluation.get('new_hypotheses', [])
+        if new_hypotheses:
+            # --- НОВОЕ: Фильтруем гипотезы, которые уже были в работе ---
+            unique_new_hypotheses = [
+                h for h in new_hypotheses if h not in self.processed_questions
+            ]
+
+            if unique_new_hypotheses:
+                # Ограничиваем количество новых гипотез, чтобы не раздувать план
+                limited_hypotheses = unique_new_hypotheses[:2]
+                analysis_plan[:0] = limited_hypotheses
+                logger.info(f"Добавлено {len(limited_hypotheses)} новых уникальных гипотез в план.")
+                # --- НОВОЕ: Сразу добавляем новые гипотезы в "обработанные", чтобы не выбрать их снова ---
+                for h in limited_hypotheses:
+                    self.processed_questions.add(h)
+            else:
+                logger.info("Все сгенерированные гипотезы уже были обработаны ранее. Пропускаем.")
 
 
 class SQLCoder(BaseAgent):
