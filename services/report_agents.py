@@ -202,79 +202,75 @@ class Orchestrator(BaseAgent):
         self.schema_cache = schema_info
         return schema_info
 
+    def _find_potential_joins(self, populated_tables: dict) -> list:
+        """Находит потенциальные колонки для JOIN между таблицами (без изменений)."""
+        joins = []
+        table_names = list(populated_tables.keys())
+        for i, table1 in enumerate(table_names):
+            for table2 in table_names[i + 1:]:
+                cols1 = set(populated_tables[table1]['columns'].keys())
+                cols2 = set(populated_tables[table2]['columns'].keys())
+
+                if f"{table2.rstrip('s')}_id" in cols1:
+                    joins.append((table1, table2, f"{table2.rstrip('s')}_id"))
+                elif f"{table1.rstrip('s')}_id" in cols2:
+                    joins.append((table1, table2, f"{table1.rstrip('s')}_id"))
+                else:
+                    common_cols = (cols1 & cols2) - {'id', 'created_at', 'updated_at'}
+                    for col in common_cols:
+                        joins.append((table1, table2, col))
+        return list(set(joins))  # Возвращаем уникальные связи
+
     def create_intelligent_plan(self) -> List[str]:
-        """Создает умный план анализа на основе реальной структуры данных, включая межтабличные связи"""
-        logger.info("Создание интеллектуального плана анализа...")
-
+        """
+        Создает КОМПЛЕКСНЫЙ и ДИРЕКТИВНЫЙ план анализа,
+        гарантирующий охват всех таблиц и связей.
+        """
+        logger.info("Создание комплексного, многоэтапного плана анализа...")
         schema = self.get_comprehensive_schema()
-        inspector = inspect(self.engine)
+        populated_tables = {k: v for k, v in schema.items() if v.get('row_count', 0) > 0}
 
-        # Фильтруем только таблицы с данными
-        populated_tables = {k: v for k, v in schema.items() if v['row_count'] > 0}
         if not populated_tables:
-            logger.error("Нет таблиц с данными!")
+            logger.error("В базе данных нет таблиц с данными!")
             return ["Проверить наличие данных в базе"]
 
         plan = []
 
-        # 1. Базовая статистика по каждой таблице
-        for table_name, info in populated_tables.items():
-            plan.append(f"Проанализировать общую статистику таблицы {table_name}")
+        # --- ФАЗА 1: РАЗВЕДОЧНЫЙ АНАЛИЗ КАЖДОЙ ТАБЛИЦЫ ---
+        # Мы создаем явный, конкретный вопрос для КАЖДОЙ таблицы.
+        plan.append("Сделать общий обзор всей схемы базы данных, перечислить все таблицы и их размеры.")
+        for table_name in populated_tables.keys():
+            question = (f"Провести базовый разведочный анализ таблицы '{table_name}': "
+                        f"описать ее назначение, ключевые колонки и основное распределение данных.")
+            plan.append(question)
 
-        # 2. Временные тренды
-        for table_name, info in populated_tables.items():
-            for col_name, col_info in info['columns'].items():
-                if any(keyword in col_name.lower() for keyword in ['date', 'time', 'created', 'updated']):
-                    plan.append(f"Проанализировать временные тренды в {table_name} по колонке {col_name}")
+        # --- ФАЗА 2: АНАЛИЗ МЕЖТАБЛИЧНЫХ СВЯЗЕЙ ---
+        # Мы находим все возможные связи и создаем явный вопрос для КАЖДОЙ из них.
+        potential_joins = self._find_potential_joins(populated_tables)
+        if potential_joins:
+            plan.append("Начать анализ связей между таблицами для понимания структуры данных в целом.")
+            for table1, table2, key in potential_joins:
+                question = (f"Проанализировать связь между таблицами '{table1}' и '{table2}' через общий ключ '{key}'. "
+                            f"Как записи из одной таблицы соотносятся с записями в другой?")
+                plan.append(question)
 
-        # 3. Категориальные распределения
-        for table_name, info in populated_tables.items():
-            for col_name, col_info in info['columns'].items():
-                if col_info.get('unique_count', 0) > 1 and col_info.get('unique_count', 0) <= 50:
-                    plan.append(f"Проанализировать распределение {col_name} в таблице {table_name}")
+        # --- ФАЗА 3: СИНТЕЗ И ПОИСК ГЛОБАЛЬНЫХ ИНСАЙТОВ ---
+        # После построения "карты" мы задаем вопросы более высокого уровня.
+        plan.extend([
+            "На основе проведенного анализа, найти ключевые бизнес-метрики (KPI) по всей базе данных.",
+            "Определить наиболее важные сегменты данных (например, самые активные пользователи, самые прибыльные "
+            "товары или категории).",
+            "Есть ли в данных какие-либо глобальные аномалии или паттерны, охватывающие несколько таблиц?"
+        ])
 
-        # 4. Межтабличные связи через FOREIGN KEY
-        for table_name in populated_tables:
-            fks = inspector.get_foreign_keys(table_name)
-            for fk in fks:
-                referred_table = fk.get('referred_table')
-                local_cols = fk.get('constrained_columns', [])
-                remote_cols = fk.get('referred_columns', [])
-                if referred_table in populated_tables and local_cols and remote_cols:
-                    local_col = local_cols[0]
-                    remote_col = remote_cols[0]
-                    plan.append(
-                        f"Исследовать зависимость между таблицами {table_name} и {referred_table} по связи {table_name}.{local_col} → {referred_table}.{remote_col}"
-                    )
-
-                    # Дополнительно: корреляции между числовыми колонками
-                    table1_cols = populated_tables[table_name]['columns']
-                    table2_cols = populated_tables[referred_table]['columns']
-
-                    numeric_cols1 = [col for col, cinfo in table1_cols.items()
-                                     if any(t in cinfo['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
-                    numeric_cols2 = [col for col, cinfo in table2_cols.items()
-                                     if any(t in cinfo['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
-
-                    if numeric_cols1 and numeric_cols2:
-                        plan.append(
-                            f"Проверить корреляции между числовыми полями {table_name} и {referred_table} (через JOIN)"
-                        )
-
-        # 5. Аномалии
-        for table_name, info in populated_tables.items():
-            numeric_cols = [col for col, col_info in info['columns'].items()
-                            if any(t in col_info['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
-            if numeric_cols:
-                plan.append(f"Найти аномалии в числовых данных таблицы {table_name}")
-
-        return plan[:12]  # ограничим количество для первых итераций
+        # ВАЖНО: Мы больше не обрезаем план. Мы передаем его целиком.
+        # `max_iterations` в Celery задаче будет нашим единственным ограничителем.
+        logger.info(f"Сгенерирован полный план из {len(plan)} шагов.")
+        return plan
 
     def process_evaluation(self, evaluation: dict, session_memory: list, analysis_plan: list, current_question: str):
-        """Обрабатывает результаты оценки, добавляет новые гипотезы и избегает повторений."""
+        """Обрабатывает результаты оценки, добавляет новые гипотезы и избегает повторений (без изменений)."""
         logger.info("Обработка результатов оценки с контролем состояния...")
-
-        # --- НОВОЕ: Запоминаем вопрос, который только что обработали ---
         self.processed_questions.add(current_question)
 
         if evaluation.get('finding'):
@@ -282,17 +278,12 @@ class Orchestrator(BaseAgent):
 
         new_hypotheses = evaluation.get('new_hypotheses', [])
         if new_hypotheses:
-            # --- НОВОЕ: Фильтруем гипотезы, которые уже были в работе ---
-            unique_new_hypotheses = [
-                h for h in new_hypotheses if h not in self.processed_questions
-            ]
-
+            unique_new_hypotheses = [h for h in new_hypotheses if h not in self.processed_questions]
             if unique_new_hypotheses:
-                # Ограничиваем количество новых гипотез, чтобы не раздувать план
                 limited_hypotheses = unique_new_hypotheses[:2]
-                analysis_plan[:0] = limited_hypotheses
-                logger.info(f"Добавлено {len(limited_hypotheses)} новых уникальных гипотез в план.")
-                # --- НОВОЕ: Сразу добавляем новые гипотезы в "обработанные", чтобы не выбрать их снова ---
+                # Добавляем новые гипотезы в конец, чтобы сначала выполнить основной план!
+                analysis_plan.extend(limited_hypotheses)
+                logger.info(f"Добавлено {len(limited_hypotheses)} новых уникальных гипотез в конец плана.")
                 for h in limited_hypotheses:
                     self.processed_questions.add(h)
             else:
