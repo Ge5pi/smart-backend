@@ -76,7 +76,7 @@ def create_visualization(df: pd.DataFrame, question: str) -> str | None:
 
 
 class BaseAgent:
-    def __init__(self, model="gpt-4o-mini"):
+    def __init__(self, model="o4-mini"):
         self.client = openai_client
         self.model = model
 
@@ -161,42 +161,18 @@ class Orchestrator(BaseAgent):
         schema = self.get_schema_details()
 
         # Создаем план с учетом доступных данных
-        prompt = f"""Вы - главный аналитик данных. Создайте практический план анализа в виде JSON массива 
-        из 5-7 ПРОСТЫХ и ВЫПОЛНИМЫХ исследовательских вопросов.
-
-        ВАЖНО: Фокусируйтесь только на таблицах с данными: {available_tables}
-
-        Пустые таблицы (избегайте их): {empty_tables}
-
-        ТИПЫ ВОПРОСОВ (начните с простых):
-        1. Базовые подсчеты и статистика
-        2. Распределение по статусам/типам
-        3. Временные тренды (по дням/неделям)
-        4. Простые корреляции между таблицами
-        5. Активность пользователей
-
-        ПРИМЕРЫ ХОРОШИХ ВОПРОСОВ:
-        - "Сколько пользователей зарегистрировано в системе?"
-        - "Какое распределение отчетов по статусам?"
-        - "Какова активность пользователей по дням?"
-        - "Сколько файлов загружено каждым пользователем?"
-
-        Избегайте сложных аналитических запросов. Начните с базовой статистики.
-
-        Верните ТОЛЬКО JSON массив строк. Пример: {{"plan": ["Вопрос 1?", "Вопрос 2?"]}}
-
-        **Схема базы данных:**
-        ```
-        {schema}
-        ```
-        """
+        prompt = f"""You are a principal data analyst. Your goal is to uncover deep, non-obvious, actionable 
+        insights. Based on the provided schema, create a strategic analysis plan as a JSON array of 5-7 probing 
+        questions. Focus on correlations, trends, anomalies, and user segmentation. Avoid simple counts. MUST-INCLUDE 
+        Question Types: Time-Series/Trend Analysis, Cross-Table Correlation (requiring a JOIN), Distribution/Anomaly 
+        Detection. Return ONLY the JSON array of strings. Example: {{"plan": ["Question 1?", "Question 2?"]}} 
+        **Database Schema:** ``` {schema} ``` """
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.2
+                response_format={"type": "json_object"}
             )
 
             data = json.loads(response.choices[0].message.content)
