@@ -202,61 +202,72 @@ class Orchestrator(BaseAgent):
         return schema_info
 
     def create_intelligent_plan(self) -> List[str]:
-        """Создает умный план анализа на основе реальной структуры данных"""
+        """Создает умный план анализа на основе реальной структуры данных, включая межтабличные связи"""
         logger.info("Создание интеллектуального плана анализа...")
 
         schema = self.get_comprehensive_schema()
+        inspector = inspect(self.engine)
 
         # Фильтруем только таблицы с данными
         populated_tables = {k: v for k, v in schema.items() if v['row_count'] > 0}
-
         if not populated_tables:
             logger.error("Нет таблиц с данными!")
             return ["Проверить наличие данных в базе"]
 
-        # Анализируем структуру для создания умного плана
         plan = []
 
         # 1. Базовая статистика по каждой таблице
         for table_name, info in populated_tables.items():
             plan.append(f"Проанализировать общую статистику таблицы {table_name}")
 
-        # 2. Поиск временных колонок для трендового анализа
+        # 2. Временные тренды
         for table_name, info in populated_tables.items():
             for col_name, col_info in info['columns'].items():
                 if any(keyword in col_name.lower() for keyword in ['date', 'time', 'created', 'updated']):
                     plan.append(f"Проанализировать временные тренды в {table_name} по колонке {col_name}")
 
-        # 3. Анализ категориальных данных
+        # 3. Категориальные распределения
         for table_name, info in populated_tables.items():
             for col_name, col_info in info['columns'].items():
                 if col_info.get('unique_count', 0) > 1 and col_info.get('unique_count', 0) <= 50:
                     plan.append(f"Проанализировать распределение {col_name} в таблице {table_name}")
 
-        # 4. Поиск связей между таблицами
-        table_names = list(populated_tables.keys())
-        if len(table_names) > 1:
-            for i, table1 in enumerate(table_names):
-                for table2 in table_names[i + 1:]:
-                    # Ищем потенциальные внешние ключи
-                    cols1 = set(populated_tables[table1]['columns'].keys())
-                    cols2 = set(populated_tables[table2]['columns'].keys())
+        # 4. Межтабличные связи через FOREIGN KEY
+        for table_name in populated_tables:
+            fks = inspector.get_foreign_keys(table_name)
+            for fk in fks:
+                referred_table = fk.get('referred_table')
+                local_cols = fk.get('constrained_columns', [])
+                remote_cols = fk.get('referred_columns', [])
+                if referred_table in populated_tables and local_cols and remote_cols:
+                    local_col = local_cols[0]
+                    remote_col = remote_cols[0]
+                    plan.append(
+                        f"Исследовать зависимость между таблицами {table_name} и {referred_table} по связи {table_name}.{local_col} → {referred_table}.{remote_col}"
+                    )
 
-                    # Общие колонки могут быть связями
-                    common_cols = cols1.intersection(cols2)
-                    if common_cols:
-                        common_col = list(common_cols)[0]
-                        plan.append(f"Найти корреляции между {table1} и {table2} через {common_col}")
+                    # Дополнительно: корреляции между числовыми колонками
+                    table1_cols = populated_tables[table_name]['columns']
+                    table2_cols = populated_tables[referred_table]['columns']
 
-        # 5. Поиск аномалий в числовых данных
+                    numeric_cols1 = [col for col, cinfo in table1_cols.items()
+                                     if any(t in cinfo['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
+                    numeric_cols2 = [col for col, cinfo in table2_cols.items()
+                                     if any(t in cinfo['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
+
+                    if numeric_cols1 and numeric_cols2:
+                        plan.append(
+                            f"Проверить корреляции между числовыми полями {table_name} и {referred_table} (через JOIN)"
+                        )
+
+        # 5. Аномалии
         for table_name, info in populated_tables.items():
             numeric_cols = [col for col, col_info in info['columns'].items()
                             if any(t in col_info['type'].lower() for t in ['int', 'float', 'numeric', 'decimal'])]
             if numeric_cols:
                 plan.append(f"Найти аномалии в числовых данных таблицы {table_name}")
 
-        # Ограничиваем план разумным количеством вопросов
-        return plan[:8]
+        return plan[:12]  # ограничим количество для первых итераций
 
     def process_evaluation(self, evaluation: dict, session_memory: list, analysis_plan: list):
         """Обрабатывает результаты оценки и добавляет новые гипотезы"""
