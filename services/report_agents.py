@@ -226,7 +226,6 @@ class SQLCoder(BaseAgent):
         )
         self.llm = ChatOpenAI(
             model=self.model,
-            temperature=0,
             api_key=config.API_KEY
         )
 
