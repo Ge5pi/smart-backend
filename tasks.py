@@ -1,4 +1,5 @@
 # tasks.py
+import pandas as pd
 from celery.exceptions import Ignore
 from sqlalchemy import create_engine
 
