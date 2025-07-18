@@ -14,7 +14,8 @@ from services.report_agents import (
     AdaptiveFeedbackSystem,
     AdvancedValidator,
     IntelligentPrioritizer,
-    run_enhanced_analysis
+    run_enhanced_analysis,
+    get_database_health_check
 )
 from celery_worker import celery_app
 import logging
@@ -68,8 +69,6 @@ def generate_enhanced_report(self, connection_id: int, user_id: int, report_id: 
             meta={'progress': 'Проверка состояния базы данных...', 'stage': 'health_check'}
         )
 
-        # Используем функцию проверки здоровья БД
-        from services.report_agents import get_database_health_check
         health_check = get_database_health_check(engine)
 
         if not health_check["connection"]:

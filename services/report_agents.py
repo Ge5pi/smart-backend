@@ -1535,6 +1535,38 @@ def run_enhanced_analysis(engine, max_questions: int = 15, enable_feedback: bool
     return final_report
 
 
+def get_database_health_check(engine) -> dict:
+    """
+    Проверяет, удалось ли подключиться к БД и есть ли в ней данные.
+    Возвращает словарь с ключами:
+      - connection: bool
+      - has_data: bool
+      - total_rows: int
+    """
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(engine)
+            # Игнорируем служебную таблицу alembic_version
+            tables = [t for t in inspector.get_table_names() if t != 'alembic_version']
+            total_rows = 0
+            for table in tables:
+                count = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0
+                total_rows += count
+
+            return {
+                "connection": True,
+                "has_data": total_rows > 0,
+                "total_rows": total_rows
+            }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "connection": False,
+            "has_data": False,
+            "total_rows": 0
+        }
+
+
 # Экспорт основных классов
 __all__ = [
     'EnhancedOrchestrator',
