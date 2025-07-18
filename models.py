@@ -39,6 +39,9 @@ class Report(Base):
     status = Column(String, default="PENDING")
     results = Column(JSON, nullable=True)  # Изменено с content на results
     created_at = Column(DateTime, default=datetime.utcnow)
+    # FIX: Added the missing relationship to Feedback
+    feedbacks = relationship("Feedback", back_populates="report")
+    connection = relationship("DatabaseConnection", back_populates="reports")
 
 class Feedback(Base):
     __tablename__ = "report_feedbacks"
