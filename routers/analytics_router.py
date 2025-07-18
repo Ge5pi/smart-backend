@@ -1,4 +1,5 @@
 # analytics_router.py
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -231,27 +232,37 @@ def get_user_reports(
     return reports
 
 
-@router.delete("/reports/{report_id}")
-def delete_report(
+@router.get("/reports/{report_id}") # Убираем response_model=schemas.Report
+def get_enhanced_report_by_id(
         report_id: int,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Удаляет отчет пользователя."""
+    """Получает готовый отчет по ID с полной информацией."""
 
     report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
 
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден")
 
-    # Останавливаем задачу если она еще выполняется
-    if report.task_id and report.status in ['PENDING', 'PROGRESS']:
-        celery_app.control.revoke(report.task_id, terminate=True)
+    logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id} со статусом {report.status}")
 
-    crud.delete_report(db, report_id=report_id)
+    results_data = report.results
 
-    logger.info(f"Пользователь {current_user.id} удалил отчет {report_id}")
-    return {"message": "Отчет успешно удален"}
+    # Защита на случай, если из БД данные пришли в виде строки, а не словаря
+    if isinstance(results_data, str):
+        try:
+            results_data = json.loads(results_data)
+        except json.JSONDecodeError:
+            results_data = {"error": "Malformed report data in database."}
+
+    return {
+        "id": report.id,
+        "status": report.status,
+        "created_at": report.created_at.isoformat(), # Гарантируем строковый формат даты
+        "task_id": report.task_id,
+        "results": results_data
+    }
 
 
 @router.post("/reports/feedback/{report_id}")
