@@ -295,6 +295,16 @@ def check_database_health(
         raise HTTPException(status_code=500, detail=f"Ошибка проверки подключения: {e}")
 
 
+@router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
+def get_user_connections(
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Получает все подключения пользователя."""
+    connections = crud.get_db_connections_by_user(db, user_id=current_user.id)
+    logger.info(f"Пользователь {current_user.id} запросил список подключений: {len(connections)} найдено")
+    return connections
+
 @router.get("/system/stats")
 def get_system_statistics(
         current_user: models.User = Depends(auth.get_current_active_user)
