@@ -1,7 +1,7 @@
 # analytics_router.py
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -151,26 +151,16 @@ def generate_legacy_report(
 def get_enhanced_report_status(task_id: str):
     """
     Получает расширенный статус задачи анализа.
-
-    Возвращает детальную информацию о прогрессе, включая:
-    - Текущий этап анализа
-    - Процент выполнения
-    - ML-инсайты в реальном времени
-    - Информацию о разнообразии анализа
     """
-
     task_result = AsyncResult(task_id, app=celery_app)
 
-    # Базовая информация о задаче
     response = {
         "task_id": task_id,
         "status": task_result.status,
         "info": task_result.info
     }
 
-    # Расширенная информация для улучшенных задач
     if task_result.info and isinstance(task_result.info, dict):
-        # Добавляем детали прогресса
         response.update({
             "progress": task_result.info.get("progress", "Неизвестно"),
             "stage": task_result.info.get("stage", "unknown"),
@@ -179,8 +169,6 @@ def get_enhanced_report_status(task_id: str):
             "diversity_report": task_result.info.get("diversity_report", {}),
             "summary": task_result.info.get("summary", {})
         })
-
-        # Добавляем информацию об ошибках
         if task_result.info.get("error"):
             response["error"] = task_result.info["error"]
 
@@ -197,7 +185,6 @@ def get_user_reports(
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Получает список отчетов пользователя с фильтрацией."""
-
     reports = crud.get_user_reports(
         db,
         user_id=current_user.id,
@@ -205,12 +192,11 @@ def get_user_reports(
         offset=offset,
         status_filter=status_filter
     )
-
     logger.info(f"Пользователь {current_user.id} запросил список отчетов: {len(reports)} найдено")
     return reports
 
 
-@router.get("/reports/{report_id}", response_model=dict)
+@router.get("/reports/{report_id}", response_model=schemas.Report)
 def get_enhanced_report_by_id(
         report_id: int,
         db: Session = Depends(database.get_db),
@@ -223,21 +209,14 @@ def get_enhanced_report_by_id(
 
     logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id}")
 
-    # Безопасная обработка результатов
-    results_data = report.results
-    if isinstance(results_data, str):
+    # Ensure results are properly loaded as a dict before returning
+    if isinstance(report.results, str):
         try:
-            results_data = json.loads(results_data)
+            report.results = json.loads(report.results)
         except json.JSONDecodeError:
-            results_data = {"error": "Malformed report data in database."}
+            report.results = {"error": "Malformed report data in database."}
 
-    return {
-        "id": report.id,
-        "status": report.status,
-        "created_at": report.created_at.isoformat(),
-        "task_id": report.task_id,
-        "results": results_data
-    }
+    return report
 
 
 @router.post("/reports/feedback/{report_id}", response_model=schemas.FeedbackResponse)
@@ -249,7 +228,6 @@ def submit_report_feedback(
 ):
     """Отправляет обратную связь по отчету для улучшения будущих анализов."""
     try:
-        # The CRUD function handles both creation and update of feedback
         feedback_record = crud.create_report_feedback(
             db,
             report_id=report_id,
@@ -259,7 +237,6 @@ def submit_report_feedback(
         logger.info(f"Получена обратная связь для отчета {report_id} от пользователя {current_user.id}")
         return feedback_record
     except ValueError as e:
-        # This error is raised by the CRUD function if the report doesn't exist.
         raise HTTPException(status_code=404, detail=str(e))
 
 
@@ -272,7 +249,6 @@ def check_database_health(
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Проверяет состояние подключения к базе данных."""
-
     db_conn = crud.get_db_connection_by_id(db, connection_id, user_id=current_user.id)
     if not db_conn:
         raise HTTPException(status_code=404, detail="Подключение не найдено")
@@ -280,13 +256,9 @@ def check_database_health(
     try:
         connection_string = crud.get_decrypted_connection_string(db, connection_id, current_user.id)
         engine = create_engine(connection_string, connect_args={'connect_timeout': 10})
-
-        # Используем функцию проверки здоровья из report_agents
         from services.report_agents import get_database_health_check
         health_check = get_database_health_check(engine)
-
         return health_check
-
     except Exception as e:
         logger.error(f"Ошибка проверки здоровья БД {connection_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка проверки подключения: {e}")
@@ -297,13 +269,9 @@ def get_system_statistics(
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Получает статистику системы анализа."""
-
-    # Получаем статистику задач Celery
     i = celery_app.control.inspect()
     active_tasks = i.active()
     scheduled_tasks = i.scheduled()
-
-    # Проверяем, что воркеры доступны
     active_count = sum(len(tasks) for tasks in active_tasks.values()) if active_tasks else 0
     scheduled_count = sum(len(tasks) for tasks in scheduled_tasks.values()) if scheduled_tasks else 0
 
@@ -321,5 +289,4 @@ def get_system_statistics(
             "intelligent_prioritization"
         ]
     }
-
     return stats
