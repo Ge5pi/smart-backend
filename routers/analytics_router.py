@@ -1,220 +1,285 @@
-# analytics_router.py
-import json
-
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
-from celery.result import AsyncResult
-from tasks import (
-    generate_enhanced_report,
-    quick_ml_analysis,
-    generate_advanced_report  # Для обратной совместимости
-)
-from celery_worker import celery_app
-import crud
-import schemas
-import models
-import auth
-import database
 from typing import Optional, List
 import logging
+import json
+from datetime import datetime
 
+import database
+import models
+import schemas
+import crud
+import auth
+from tasks import generate_enhanced_report
+
+# Настройка логирования
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/analytics",
-    tags=["Enhanced Analytics Engine"],
-    dependencies=[Depends(auth.get_current_active_user)]
+    tags=["analytics"]
 )
 
 
-# =============== ПОДКЛЮЧЕНИЯ К БД ===============
-
-@router.post("/connections/", response_model=schemas.DatabaseConnectionInfo)
-def add_database_connection(
-        conn_details: schemas.DatabaseConnectionCreate,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
-):
-    """Добавляет новое подключение к базе данных с проверкой."""
-    try:
-        # Проверяем подключение
-        engine = create_engine(conn_details.connection_string, connect_args={'connect_timeout': 10})
-        connection = engine.connect()
-        connection.close()
-
-        # Создаем запись в БД
-        db_conn = crud.create_db_connection(db, user_id=current_user.id, conn_details=conn_details)
-
-        logger.info(f"Пользователь {current_user.id} добавил новое подключение {db_conn.id}")
-        return db_conn
-
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка подключения к БД: {e}")
-        raise HTTPException(status_code=400, detail=f"Неверная строка подключения: {e}")
-
-
-@router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
-def get_user_connections(
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
-):
-    """Получает все подключения пользователя."""
-    connections = crud.get_db_connections_by_user(db, user_id=current_user.id)
-    logger.info(f"Пользователь {current_user.id} запросил список подключений: {len(connections)} найдено")
-    return connections
-
-
-# =============== ГЕНЕРАЦИЯ ОТЧЕТОВ ===============
-
-@router.post("/reports/generate/{connection_id}", response_model=schemas.ReportInfo)
-def generate_enhanced_analytics_report(
+@router.post("/reports/create")
+def create_analysis_report(
         connection_id: int,
-        max_questions: Optional[int] = 15,
-        enable_feedback: Optional[bool] = True,
-        analysis_type: Optional[str] = "enhanced",  # enhanced, quick, legacy
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """
-    Генерирует улучшенный отчет с ML-анализом и адаптивной обратной связью.
-
-    Args:
-        connection_id: ID подключения к БД
-        max_questions: Максимальное количество вопросов для анализа (по умолчанию 15)
-        enable_feedback: Включить адаптивную обратную связь (по умолчанию True)
-        analysis_type: Тип анализа - enhanced, quick, legacy
-    """
-
-    # Проверяем существование подключения
-    db_conn = crud.get_db_connection_by_id(db, connection_id, user_id=current_user.id)
-    if not db_conn:
+    """Создает новый отчет анализа для указанного подключения."""
+    # Проверяем, что подключение существует и принадлежит пользователю
+    connection = crud.get_db_connection_by_id(db, connection_id, current_user.id)
+    if not connection:
         raise HTTPException(status_code=404, detail="Подключение не найдено")
 
-    # Создаем запись отчета
-    report_record = crud.create_report(
-        db=db,
-        user_id=current_user.id,
-        connection_id=connection_id
-    )
+    # Создаем новый отчет
+    report = crud.create_report(db, current_user.id, connection_id)
 
-    # Выбираем тип анализа и запускаем соответствующую задачу
-    if analysis_type == "quick":
-        logger.info(f"Запуск быстрого ML-анализа для пользователя {current_user.id}")
-        task = quick_ml_analysis.delay(connection_id, current_user.id, report_record.id)
-
-    elif analysis_type == "legacy":
-        logger.info(f"Запуск legacy анализа для пользователя {current_user.id}")
-        task = generate_advanced_report.delay(connection_id, current_user.id, report_record.id)
-
-    else:  # enhanced (по умолчанию)
-        logger.info(f"Запуск улучшенного анализа для пользователя {current_user.id}")
-        task = generate_enhanced_report.delay(
-            connection_id,
-            current_user.id,
-            report_record.id,
-            max_questions,
-            enable_feedback
-        )
-
-    # Обновляем запись с task_id
-    report_record.task_id = task.id
-    db.commit()
-    db.refresh(report_record)
-
-    logger.info(f"Отчет {report_record.id} создан с task_id: {task.id}")
-    return report_record
-
-
-# Сохраняем старый эндпоинт для обратной совместимости
-@router.post("/reports/generate-legacy/{connection_id}", response_model=schemas.ReportInfo)
-def generate_legacy_report(
-        connection_id: int,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
-):
-    """Legacy эндпоинт для старых клиентов."""
-    return generate_enhanced_analytics_report(
+    # Запускаем асинхронную задачу анализа
+    task = generate_enhanced_report.delay(
+        report_id=report.id,
         connection_id=connection_id,
-        max_questions=12,
-        enable_feedback=False,
-        analysis_type="legacy",
-        db=db,
-        current_user=current_user
+        user_id=current_user.id
     )
 
+    # Обновляем отчет с task_id
+    crud.update_report(db, report.id, "PROCESSING", {})
+    report.task_id = task.id
+    db.commit()
 
-# =============== СТАТУС И ПОЛУЧЕНИЕ ОТЧЕТОВ ===============
+    logger.info(f"Создан отчет {report.id} для пользователя {current_user.id} с задачей {task.id}")
 
-@router.get("/reports/status/{task_id}")
-def get_enhanced_report_status(task_id: str):
-    """
-    Получает расширенный статус задачи анализа.
-
-    Возвращает детальную информацию о прогрессе, включая:
-    - Текущий этап анализа
-    - Процент выполнения
-    - ML-инсайты в реальном времени
-    - Информацию о разнообразии анализа
-    """
-
-    task_result = AsyncResult(task_id, app=celery_app)
-
-    # Базовая информация о задаче
-    response = {
-        "task_id": task_id,
-        "status": task_result.status,
-        "info": task_result.info
+    return {
+        "report_id": report.id,
+        "task_id": task.id,
+        "status": "PROCESSING",
+        "message": "Анализ запущен. Проверьте статус через несколько минут."
     }
 
-    # Расширенная информация для улучшенных задач
-    if task_result.info and isinstance(task_result.info, dict):
-        # Добавляем детали прогресса
-        response.update({
-            "progress": task_result.info.get("progress", "Неизвестно"),
-            "stage": task_result.info.get("stage", "unknown"),
-            "progress_percentage": task_result.info.get("progress_percentage", 0),
-            "current_question": task_result.info.get("question", ""),
-            "diversity_report": task_result.info.get("diversity_report", {}),
-            "summary": task_result.info.get("summary", {})
-        })
 
-        # Добавляем информацию об ошибках
-        if task_result.info.get("error"):
-            response["error"] = task_result.info["error"]
-
-    logger.info(f"Запрошен статус задачи {task_id}: {task_result.status}")
-    return response
-
-
-@router.get("/reports/{report_id}", response_model=schemas.Report)
-def get_enhanced_report_by_id(
+@router.get("/reports/{report_id}")
+def get_report_by_id(
         report_id: int,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Получает готовый отчет по ID с полной информацией."""
-
+    """Получает отчет по ID с полной информацией."""
     report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
-
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден")
 
-    # **ИСПРАВЛЕНО**: Убраны исключения для статусов 'FAILED' и '!COMPLETED'.
-    # Теперь эндпоинт всегда возвращает объект отчета,
-    # а фронтенд сам решает, как его обрабатывать на основе поля 'status'.
     logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id} со статусом {report.status}")
-    return report
+
+    # Получаем данные из поля content
+    results_data = report.content
+
+    # Защита на случай, если из БД данные пришли в виде строки
+    if isinstance(results_data, str):
+        try:
+            results_data = json.loads(results_data)
+        except json.JSONDecodeError:
+            logger.error(f"Malformed JSON in report {report_id}: {results_data}")
+            results_data = {"error": "Malformed report data in database."}
+
+    # Если данные отсутствуют, возвращаем базовую структуру
+    if not results_data:
+        results_data = {
+            "executive_summary": "Анализ еще не завершен",
+            "detailed_findings": [],
+            "recommendations": [],
+            "domain_context": {
+                "domain_type": "unknown",
+                "confidence": 0.0,
+                "key_entities": [],
+                "business_metrics": []
+            },
+            "ml_insights": {
+                "total_patterns": 0,
+                "pattern_types": {},
+                "high_confidence_patterns": []
+            },
+            "analysis_stats": {
+                "questions_processed": 0,
+                "successful_findings": 0,
+                "ml_patterns_found": 0,
+                "tables_coverage": 0,
+                "tables_analyzed": 0
+            },
+            "diversity_report": {
+                "total_tables": 0,
+                "analyzed_tables": 0,
+                "coverage_percentage": 0,
+                "underanalyzed_tables": []
+            }
+        }
+
+    return {
+        "id": report.id,
+        "status": report.status,
+        "created_at": report.created_at.isoformat(),
+        "task_id": report.task_id,
+        "results": results_data  # Маппим content в results для фронтенда
+    }
 
 
-# =============== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ===============
+@router.get("/reports/status/{task_id}")
+def get_task_status(task_id: str):
+    """Получает статус выполнения задачи анализа."""
+    from celery.result import AsyncResult
+
+    try:
+        # Получаем статус задачи из Celery
+        task_result = AsyncResult(task_id)
+
+        if task_result.state == "PENDING":
+            return {
+                "task_id": task_id,
+                "status": "PENDING",
+                "progress": "Задача в очереди",
+                "stage": "waiting",
+                "progress_percentage": 0,
+                "current_question": "",
+                "diversity_report": {
+                    "total_tables": 0,
+                    "analyzed_tables": 0,
+                    "coverage_percentage": 0,
+                    "underanalyzed_tables": []
+                },
+                "summary": {
+                    "questions_processed": 0,
+                    "findings_count": 0,
+                    "ml_patterns_found": 0,
+                    "domain_detected": "unknown"
+                }
+            }
+
+        elif task_result.state == "PROGRESS":
+            # Получаем информацию о прогрессе с защитой от некорректных данных
+            info = task_result.info if isinstance(task_result.info, dict) else {}
+
+            # Безопасное получение значений с fallback
+            progress = info.get("progress", "Выполняется анализ") if isinstance(info, dict) else "Выполняется анализ"
+            stage = info.get("stage", "processing") if isinstance(info, dict) else "processing"
+            progress_percentage = info.get("progress_percentage", 0) if isinstance(info, dict) else 0
+            current_question = info.get("current_question", "") if isinstance(info, dict) else ""
+
+            # Безопасное получение diversity_report
+            diversity_report = info.get("diversity_report", {}) if isinstance(info, dict) else {}
+            if not isinstance(diversity_report, dict):
+                diversity_report = {}
+
+            diversity_report_safe = {
+                "total_tables": diversity_report.get("total_tables", 0),
+                "analyzed_tables": diversity_report.get("analyzed_tables", 0),
+                "coverage_percentage": diversity_report.get("coverage_percentage", 0),
+                "underanalyzed_tables": diversity_report.get("underanalyzed_tables", [])
+            }
+
+            # Безопасное получение summary
+            summary = info.get("summary", {}) if isinstance(info, dict) else {}
+            if not isinstance(summary, dict):
+                summary = {}
+
+            summary_safe = {
+                "questions_processed": summary.get("questions_processed", 0),
+                "findings_count": summary.get("findings_count", 0),
+                "ml_patterns_found": summary.get("ml_patterns_found", 0),
+                "domain_detected": summary.get("domain_detected", "unknown")
+            }
+
+            return {
+                "task_id": task_id,
+                "status": "PROGRESS",
+                "progress": progress,
+                "stage": stage,
+                "progress_percentage": progress_percentage,
+                "current_question": current_question,
+                "diversity_report": diversity_report_safe,
+                "summary": summary_safe
+            }
+
+        elif task_result.state == "SUCCESS":
+            return {
+                "task_id": task_id,
+                "status": "SUCCESS",
+                "progress": "Анализ завершен",
+                "stage": "completed",
+                "progress_percentage": 100,
+                "current_question": "",
+                "diversity_report": {
+                    "total_tables": 0,
+                    "analyzed_tables": 0,
+                    "coverage_percentage": 100,
+                    "underanalyzed_tables": []
+                },
+                "summary": {
+                    "questions_processed": 0,
+                    "findings_count": 0,
+                    "ml_patterns_found": 0,
+                    "domain_detected": "completed"
+                }
+            }
+
+        elif task_result.state == "FAILURE":
+            # Безопасное получение информации об ошибке
+            error_info = task_result.info if task_result.info is not None else "Неизвестная ошибка"
+            error_message = str(error_info) if error_info else "Неизвестная ошибка"
+
+            return {
+                "task_id": task_id,
+                "status": "FAILURE",
+                "progress": "Ошибка выполнения",
+                "stage": "failed",
+                "progress_percentage": 0,
+                "current_question": "",
+                "error": error_message,
+                "diversity_report": {
+                    "total_tables": 0,
+                    "analyzed_tables": 0,
+                    "coverage_percentage": 0,
+                    "underanalyzed_tables": []
+                },
+                "summary": {
+                    "questions_processed": 0,
+                    "findings_count": 0,
+                    "ml_patterns_found": 0,
+                    "domain_detected": "failed"
+                }
+            }
+
+        else:
+            return {
+                "task_id": task_id,
+                "status": task_result.state,
+                "progress": "Неизвестный статус",
+                "stage": "unknown",
+                "progress_percentage": 0,
+                "current_question": "",
+                "diversity_report": {
+                    "total_tables": 0,
+                    "analyzed_tables": 0,
+                    "coverage_percentage": 0,
+                    "underanalyzed_tables": []
+                },
+                "summary": {
+                    "questions_processed": 0,
+                    "findings_count": 0,
+                    "ml_patterns_found": 0,
+                    "domain_detected": "unknown"
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Ошибка получения статуса задачи {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка получения статуса: {str(e)}")
+
 
 @router.get("/reports/list/", response_model=List[schemas.ReportInfo])
 def get_user_reports_list(
-        limit: Optional[int] = 10,
-        offset: Optional[int] = 0,
-        status_filter: Optional[str] = None,
+        limit: Optional[int] = Query(10, ge=1, le=100),
+        offset: Optional[int] = Query(0, ge=0),
+        status_filter: Optional[str] = Query(None),
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
@@ -235,42 +300,10 @@ def get_user_reports_list(
         raise HTTPException(status_code=500, detail="Ошибка получения списка отчетов")
 
 
-@router.get("/reports/{report_id}")
-def get_enhanced_report_by_id(
-        report_id: int,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
-):
-    """Получает готовый отчет по ID с полной информацией."""
-    report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
-    if not report:
-        raise HTTPException(status_code=404, detail="Отчет не найден")
-
-    logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id} со статусом {report.status}")
-
-    # Получаем данные из поля content (это правильное поле из модели)
-    results_data = report.content  # Используем content вместо results
-
-    # Защита на случай, если из БД данные пришли в виде строки
-    if isinstance(results_data, str):
-        try:
-            results_data = json.loads(results_data)
-        except json.JSONDecodeError:
-            results_data = {"error": "Malformed report data in database."}
-
-    return {
-        "id": report.id,
-        "status": report.status,
-        "created_at": report.created_at.isoformat(),
-        "task_id": report.task_id,
-        "results": results_data  # Возвращаем как results для фронтенда
-    }
-
-
 @router.post("/reports/feedback/{report_id}")
 def submit_report_feedback(
         report_id: int,
-        feedback_data: schemas.FeedbackCreate,  # Используем схему вместо dict
+        feedback_data: schemas.FeedbackCreate,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
@@ -296,63 +329,59 @@ def submit_report_feedback(
         raise HTTPException(status_code=500, detail="Ошибка сохранения обратной связи")
 
 
-# =============== ДИАГНОСТИКА И МОНИТОРИНГ ===============
-
-@router.get("/health-check/{connection_id}")
-def check_database_health(
-        connection_id: int,
+@router.get("/reports/{report_id}/feedback")
+def get_report_feedback(
+        report_id: int,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Проверяет состояние подключения к базе данных."""
-
-    db_conn = crud.get_db_connection_by_id(db, connection_id, user_id=current_user.id)
-    if not db_conn:
-        raise HTTPException(status_code=404, detail="Подключение не найдено")
+    """Получает обратную связь по отчету."""
+    # Проверяем, что отчет существует и принадлежит пользователю
+    report = crud.get_report_by_id(db, report_id, current_user.id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден")
 
     try:
-        connection_string = crud.get_decrypted_connection_string(db, connection_id, current_user.id)
-        engine = create_engine(connection_string, connect_args={'connect_timeout': 10})
-
-        # Используем функцию проверки здоровья из report_agents
-        from services.report_agents import get_database_health_check
-        health_check = get_database_health_check(engine)
-
-        return health_check
-
+        feedbacks = crud.get_report_feedbacks(db, report_id)
+        return {
+            "report_id": report_id,
+            "feedbacks": feedbacks
+        }
     except Exception as e:
-        logger.error(f"Ошибка проверки здоровья БД {connection_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка проверки подключения: {e}")
+        logger.error(f"Ошибка получения обратной связи: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения обратной связи")
 
 
-@router.get("/system/stats")
-def get_system_statistics(
+@router.delete("/reports/{report_id}")
+def delete_report(
+        report_id: int,
+        db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Получает статистику системы анализа."""
+    """Удаляет отчет пользователя."""
+    report = crud.get_report_by_id(db, report_id, current_user.id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден")
 
-    # Получаем статистику задач Celery
-    i = celery_app.control.inspect()
-    active_tasks = i.active()
-    scheduled_tasks = i.scheduled()
+    try:
+        # Удаляем отчет
+        db.delete(report)
+        db.commit()
 
-    # Проверяем, что воркеры доступны
-    active_count = sum(len(tasks) for tasks in active_tasks.values()) if active_tasks else 0
-    scheduled_count = sum(len(tasks) for tasks in scheduled_tasks.values()) if scheduled_tasks else 0
+        logger.info(f"Удален отчет {report_id} пользователя {current_user.id}")
 
-    stats = {
-        "active_tasks": active_count,
-        "scheduled_tasks": scheduled_count,
-        "user_id": current_user.id,
-        "available_analysis_types": ["enhanced", "quick", "legacy"],
-        "max_questions_limit": 50,
-        "supported_features": [
-            "ml_pattern_detection",
-            "domain_analysis",
-            "adaptive_feedback",
-            "advanced_validation",
-            "intelligent_prioritization"
-        ]
+        return {"message": "Отчет успешно удален"}
+    except Exception as e:
+        logger.error(f"Ошибка удаления отчета {report_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Ошибка удаления отчета")
+
+
+@router.get("/health")
+def health_check():
+    """Проверка работоспособности сервиса аналитики."""
+    return {
+        "status": "healthy",
+        "service": "analytics",
+        "timestamp": datetime.now().isoformat()
     }
-
-    return stats
