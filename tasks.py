@@ -1,5 +1,7 @@
 # tasks.py
+import json
 
+import numpy as np
 import pandas as pd
 from celery.exceptions import Ignore
 from sqlalchemy import create_engine
@@ -497,16 +499,32 @@ def quick_ml_analysis(self, connection_id: int, user_id: int, report_id: int):
         db_session.close()
 
 def safe_json_serialize(obj):
-    """Безопасная JSON сериализация с обработкой сложных объектов"""
+    """
+    Улучшенная функция для безопасной JSON-сериализации, которая рекурсивно
+    обрабатывает вложенные структуры и сложные типы данных.
+    """
+    def default_converter(o):
+        if isinstance(o, (np.integer, np.int64)):
+            return int(o)
+        if isinstance(o, (np.floating, np.float64)):
+            return float(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if hasattr(o, 'isoformat'): # Для дат и времени
+            return o.isoformat()
+        return str(o) # В крайнем случае преобразуем в строку
+
     try:
-        import json
-        return json.loads(json.dumps(obj, default=str))
+        # Используем json.dumps с кастомным конвертером, затем json.loads
+        # для получения чистых Python-объектов.
+        return json.loads(json.dumps(obj, default=default_converter))
     except Exception as e:
-        logger.error(f"Ошибка JSON сериализации: {e}")
-        # Возвращаем упрощенную версию
-        if isinstance(obj, dict):
-            return {k: str(v) for k, v in obj.items()}
-        return str(obj)
+        logger.error(f"Критическая ошибка JSON сериализации: {e}")
+        # Возвращаем упрощенную, но информативную ошибку
+        return {
+            "error": "Произошла критическая ошибка при обработке данных отчета.",
+            "details": str(e)
+        }
 
 
 # Обратная совместимость со старой функцией
