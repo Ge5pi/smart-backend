@@ -17,7 +17,7 @@ import schemas
 import models
 import auth
 import database
-from typing import Optional
+from typing import Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -210,8 +210,8 @@ def get_enhanced_report_by_id(
 
 # =============== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ===============
 
-@router.get("/reports/list/", response_model=list[schemas.ReportInfo])
-def get_user_reports(
+@router.get("/reports/list/", response_model=List[schemas.ReportInfo])
+def get_user_reports_list(
         limit: Optional[int] = 10,
         offset: Optional[int] = 0,
         status_filter: Optional[str] = None,
@@ -219,37 +219,39 @@ def get_user_reports(
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Получает список отчетов пользователя с фильтрацией."""
+    try:
+        reports = crud.get_user_reports(
+            db=db,
+            user_id=current_user.id,
+            limit=limit,
+            offset=offset,
+            status_filter=status_filter
+        )
 
-    reports = crud.get_user_reports(
-        db,
-        user_id=current_user.id,
-        limit=limit,
-        offset=offset,
-        status_filter=status_filter
-    )
-
-    logger.info(f"Пользователь {current_user.id} запросил список отчетов: {len(reports)} найдено")
-    return reports
+        logger.info(f"Пользователь {current_user.id} запросил список отчетов: {len(reports)} найдено")
+        return reports
+    except Exception as e:
+        logger.error(f"Ошибка получения списка отчетов: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения списка отчетов")
 
 
-@router.get("/reports/{report_id}") # Убираем response_model=schemas.Report
+@router.get("/reports/{report_id}")
 def get_enhanced_report_by_id(
         report_id: int,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Получает готовый отчет по ID с полной информацией."""
-
     report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
-
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден")
 
     logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id} со статусом {report.status}")
 
-    results_data = report.results
+    # Получаем данные из поля content (это правильное поле из модели)
+    results_data = report.content  # Используем content вместо results
 
-    # Защита на случай, если из БД данные пришли в виде строки, а не словаря
+    # Защита на случай, если из БД данные пришли в виде строки
     if isinstance(results_data, str):
         try:
             results_data = json.loads(results_data)
@@ -259,36 +261,39 @@ def get_enhanced_report_by_id(
     return {
         "id": report.id,
         "status": report.status,
-        "created_at": report.created_at.isoformat(), # Гарантируем строковый формат даты
+        "created_at": report.created_at.isoformat(),
         "task_id": report.task_id,
-        "results": results_data
+        "results": results_data  # Возвращаем как results для фронтенда
     }
 
 
 @router.post("/reports/feedback/{report_id}")
 def submit_report_feedback(
         report_id: int,
-        feedback_data: dict,  # {rating: int, comment: str, useful_sections: list}
+        feedback_data: schemas.FeedbackCreate,  # Используем схему вместо dict
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Отправляет обратную связь по отчету для улучшения будущих анализов."""
+    try:
+        feedback = crud.create_report_feedback(
+            db=db,
+            report_id=report_id,
+            user_id=current_user.id,
+            feedback_data=feedback_data.dict()
+        )
 
-    report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
+        logger.info(f"Получена обратная связь для отчета {report_id} от пользователя {current_user.id}")
 
-    if not report:
-        raise HTTPException(status_code=404, detail="Отчет не найден")
-
-    # Сохраняем обратную связь
-    crud.create_report_feedback(
-        db,
-        report_id=report_id,
-        user_id=current_user.id,
-        feedback_data=feedback_data
-    )
-
-    logger.info(f"Получена обратная связь для отчета {report_id} от пользователя {current_user.id}")
-    return {"message": "Спасибо за обратную связь! Она поможет улучшить будущие анализы."}
+        return {
+            "message": "Спасибо за обратную связь! Она поможет улучшить будущие анализы.",
+            "feedback_id": feedback.id
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Ошибка создания обратной связи: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка сохранения обратной связи")
 
 
 # =============== ДИАГНОСТИКА И МОНИТОРИНГ ===============
