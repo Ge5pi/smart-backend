@@ -17,7 +17,8 @@ from services.report_agents import (
     AdvancedValidator,
     IntelligentPrioritizer,
     run_enhanced_analysis,
-    get_database_health_check
+    get_database_health_check,
+    safe_json_serialize
 )
 from celery_worker import celery_app
 import logging
@@ -250,57 +251,38 @@ def generate_enhanced_report(self, connection_id: int, user_id: int, report_id: 
 
 
     except Exception as e:
-
         logger.error(f"[ENHANCED TASK ERROR] {e}", exc_info=True)
 
+        # Determine the stage where the error occurred from the task's last known state
+        current_stage = 'unknown'
+        if self.request.info and isinstance(self.request.info, dict):
+            current_stage = self.request.info.get('stage', 'unknown')
+
         error_report = {
-
             "error": "Произошла критическая ошибка в улучшенной задаче анализа",
-
             "details": str(e),
-
-            "stage": getattr(self, 'current_stage', 'unknown'),
-
+            "stage": current_stage,
             "type": type(e).__name__,
-
-            "exc_info": str(e)  # Добавляем это поле
-
         }
 
         # Обновляем отчет ПЕРЕД обновлением состояния задачи
-
         try:
-
             crud.update_report(db_session, report_id, "FAILED", error_report)
-
         except Exception as update_error:
-
             logger.error(f"Ошибка обновления отчета: {update_error}")
 
         # Обновляем состояние задачи с правильной структурой
-
         try:
-
             self.update_state(
-
                 state='FAILURE',
-
                 meta={
-
                     'progress': 'Ошибка выполнения',
-
                     'error': str(e),
-
                     'error_type': type(e).__name__,
-
                     'stage': 'error'
-
                 }
-
             )
-
         except Exception as state_error:
-
             logger.error(f"Ошибка обновления состояния: {state_error}")
 
         raise Ignore()
@@ -497,36 +479,6 @@ def quick_ml_analysis(self, connection_id: int, user_id: int, report_id: int):
         raise e
     finally:
         db_session.close()
-
-
-def safe_json_serialize(obj):
-    """
-    Улучшенная функция для безопасной JSON-сериализации, которая рекурсивно
-    обрабатывает вложенные структуры и сложные типы данных.
-    """
-
-    def default_converter(o):
-        if isinstance(o, (np.integer, np.int64)):
-            return int(o)
-        if isinstance(o, (np.floating, np.float64)):
-            return float(o)
-        if isinstance(o, np.ndarray):
-            return o.tolist()
-        if hasattr(o, 'isoformat'):  # Для дат и времени
-            return o.isoformat()
-        return str(o)  # В крайнем случае преобразуем в строку
-
-    try:
-        # Используем json.dumps с кастомным конвертером, затем json.loads
-        # для получения чистых Python-объектов.
-        return json.loads(json.dumps(obj, default=default_converter))
-    except Exception as e:
-        logger.error(f"Критическая ошибка JSON сериализации: {e}")
-        # Возвращаем упрощенную, но информативную ошибку
-        return {
-            "error": "Произошла критическая ошибка при обработке данных отчета.",
-            "details": str(e)
-        }
 
 
 # Обратная совместимость со старой функцией

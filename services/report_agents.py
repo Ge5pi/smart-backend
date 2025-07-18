@@ -41,6 +41,38 @@ s3_client = boto3.client(
 openai_client = openai.OpenAI(api_key=config.API_KEY)
 
 
+# ================== УТИЛИТЫ ==================
+
+def safe_json_serialize(obj):
+    """
+    Улучшенная функция для безопасной JSON-сериализации, которая рекурсивно
+    обрабатывает вложенные структуры и сложные типы данных.
+    """
+
+    def default_converter(o):
+        if isinstance(o, (np.integer, np.int64)):
+            return int(o)
+        if isinstance(o, (np.floating, np.float64)):
+            return float(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if hasattr(o, 'isoformat'):  # Для дат и времени
+            return o.isoformat()
+        return str(o)  # В крайнем случае преобразуем в строку
+
+    try:
+        # Используем json.dumps с кастомным конвертером, затем json.loads
+        # для получения чистых Python-объектов.
+        return json.loads(json.dumps(obj, default=default_converter))
+    except Exception as e:
+        logger.error(f"Критическая ошибка JSON сериализации: {e}")
+        # Возвращаем упрощенную, но информативную ошибку
+        return {
+            "error": "Произошла критическая ошибка при обработке данных отчета.",
+            "details": str(e)
+        }
+
+
 # ================== МАШИННОЕ ОБУЧЕНИЕ ==================
 
 @dataclass
@@ -68,7 +100,6 @@ class DataPattern:
 
     def _safe_serialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Безопасная сериализация метаданных"""
-        from tasks import safe_json_serialize
         return safe_json_serialize(metadata)
 
 
@@ -78,7 +109,7 @@ class MLPatternDetector:
     def __init__(self):
         self.anomaly_detector = IsolationForest(contamination=0.1, random_state=42)
         self.scaler = StandardScaler()
-        self.clustering_model = KMeans(n_clusters=3, random_state=42)
+        self.clustering_model = KMeans(n_clusters=3, random_state=42, n_init=10)
         self.detected_patterns = []
 
     def detect_anomalies(self, df: pd.DataFrame, table_name: str) -> List[DataPattern]:
@@ -1183,8 +1214,8 @@ class EnhancedSQLCoder(BaseAgent):
             # Пытаемся найти SQL в тексте ответа
             output_text = agent_result.get('output', '')
             sql_patterns = [
-                r'``````',
-                r'``````',
+                r'```sql\n(.*?)\n```',
+                r'```\n(.*?)\n```',
                 r'Query:\s*(SELECT.*?)(?:\n|$)',
                 r'(SELECT.*?)(?:\n|$)'
             ]
@@ -1617,6 +1648,6 @@ __all__ = [
     'AdaptiveFeedbackSystem',
     'AdvancedValidator',
     'IntelligentPrioritizer',
-    'run_enhanced_analysis'
+    'run_enhanced_analysis',
+    'safe_json_serialize'
 ]
-

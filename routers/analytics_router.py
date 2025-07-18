@@ -17,7 +17,7 @@ import schemas
 import models
 import auth
 import database
-from typing import Optional
+from typing import Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def add_database_connection(
         raise HTTPException(status_code=400, detail=f"Неверная строка подключения: {e}")
 
 
-@router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
+@router.get("/connections/", response_model=List[schemas.DatabaseConnectionInfo])
 def get_user_connections(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
@@ -188,7 +188,7 @@ def get_enhanced_report_status(task_id: str):
     return response
 
 
-@router.get("/reports/list/", response_model=list[schemas.ReportInfo])
+@router.get("/reports/list/", response_model=List[schemas.ReportInfo])
 def get_user_reports(
         limit: Optional[int] = 10,
         offset: Optional[int] = 0,
@@ -240,30 +240,27 @@ def get_enhanced_report_by_id(
     }
 
 
-@router.post("/reports/feedback/{report_id}")
+@router.post("/reports/feedback/{report_id}", response_model=schemas.FeedbackResponse)
 def submit_report_feedback(
         report_id: int,
-        feedback_data: dict,  # {rating: int, comment: str, useful_sections: list}
+        feedback_data: schemas.FeedbackCreate,
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Отправляет обратную связь по отчету для улучшения будущих анализов."""
-
-    report = crud.get_report_by_id(db, report_id=report_id, user_id=current_user.id)
-
-    if not report:
-        raise HTTPException(status_code=404, detail="Отчет не найден")
-
-    # Сохраняем обратную связь
-    crud.create_report_feedback(
-        db,
-        report_id=report_id,
-        user_id=current_user.id,
-        feedback_data=feedback_data
-    )
-
-    logger.info(f"Получена обратная связь для отчета {report_id} от пользователя {current_user.id}")
-    return {"message": "Спасибо за обратную связь! Она поможет улучшить будущие анализы."}
+    try:
+        # The CRUD function handles both creation and update of feedback
+        feedback_record = crud.create_report_feedback(
+            db,
+            report_id=report_id,
+            user_id=current_user.id,
+            feedback_data=feedback_data.model_dump()
+        )
+        logger.info(f"Получена обратная связь для отчета {report_id} от пользователя {current_user.id}")
+        return feedback_record
+    except ValueError as e:
+        # This error is raised by the CRUD function if the report doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # =============== ДИАГНОСТИКА И МОНИТОРИНГ ===============
@@ -294,16 +291,6 @@ def check_database_health(
         logger.error(f"Ошибка проверки здоровья БД {connection_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка проверки подключения: {e}")
 
-
-@router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
-def get_user_connections(
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
-):
-    """Получает все подключения пользователя."""
-    connections = crud.get_db_connections_by_user(db, user_id=current_user.id)
-    logger.info(f"Пользователь {current_user.id} запросил список подключений: {len(connections)} найдено")
-    return connections
 
 @router.get("/system/stats")
 def get_system_statistics(
