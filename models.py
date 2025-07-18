@@ -10,6 +10,9 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     files = relationship("File", back_populates="owner")
+    feedbacks = relationship("Feedback", back_populates="user")
+    connections = relationship("DatabaseConnection", back_populates="user")
+
 
 class File(Base):
     __tablename__ = "an_files"
@@ -28,7 +31,9 @@ class DatabaseConnection(Base):
     nickname = Column(String, index=True)
     db_type = Column(String)
     encrypted_connection_string = Column(LargeBinary, nullable=False)
-    user = relationship("User")
+    user = relationship("User", back_populates="connections")
+    # The 'reports' property is now created automatically by backref in the Report model
+
 
 class Report(Base):
     __tablename__ = "reports"
@@ -37,11 +42,13 @@ class Report(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     task_id = Column(String, unique=True, index=True, nullable=True)
     status = Column(String, default="PENDING")
-    results = Column(JSON, nullable=True)  # Изменено с content на results
+    results = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    # FIX: Added the missing relationship to Feedback
     feedbacks = relationship("Feedback", back_populates="report")
-    connection = relationship("DatabaseConnection", back_populates="reports")
+    # FIX: Using backref to simplify the relationship and avoid the configuration error.
+    # This automatically creates the 'reports' collection on the DatabaseConnection model.
+    connection = relationship("DatabaseConnection", backref="reports")
+
 
 class Feedback(Base):
     __tablename__ = "report_feedbacks"
@@ -50,7 +57,7 @@ class Feedback(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     rating = Column(Integer, nullable=False)  # 1-5
     comment = Column(Text, nullable=True)
-    useful_sections = Column(JSON, nullable=True)  # Список полезных разделов
+    useful_sections = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     report = relationship("Report", back_populates="feedbacks")
-    user = relationship("User")
+    user = relationship("User", back_populates="feedbacks")
