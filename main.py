@@ -75,7 +75,7 @@ async def startup_event():
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok"}
-
+allow_origin_regex = r"https://smart-frontend-production\.up\.railway\.app|http://localhost:5173|https?://(www\.)?soda\.contact"
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 AGENT_MODEL = "o4-mini"
@@ -94,6 +94,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origin_regex=allow_origin_regex
 )
 
 if INDEX_NAME not in pc.list_indexes().names():
