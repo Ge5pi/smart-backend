@@ -200,17 +200,10 @@ def get_enhanced_report_by_id(
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден")
 
-    if report.status == 'FAILED':
-        logger.warning(f"Запрошен неуспешный отчет {report_id}")
-        raise HTTPException(status_code=422, detail=f"Отчет завершился с ошибкой: {report.results}")
-
-    if report.status != 'COMPLETED':
-        raise HTTPException(
-            status_code=202,
-            detail=f"Отчет еще в процессе генерации. Статус: {report.status}"
-        )
-
-    logger.info(f"Пользователь {current_user.id} получил отчет {report_id}")
+    # **ИСПРАВЛЕНО**: Убраны исключения для статусов 'FAILED' и '!COMPLETED'.
+    # Теперь эндпоинт всегда возвращает объект отчета,
+    # а фронтенд сам решает, как его обрабатывать на основе поля 'status'.
+    logger.info(f"Пользователь {current_user.id} получил данные отчета {report_id} со статусом {report.status}")
     return report
 
 
@@ -323,12 +316,17 @@ def get_system_statistics(
     """Получает статистику системы анализа."""
 
     # Получаем статистику задач Celery
-    active_tasks = celery_app.control.inspect().active()
-    scheduled_tasks = celery_app.control.inspect().scheduled()
+    i = celery_app.control.inspect()
+    active_tasks = i.active()
+    scheduled_tasks = i.scheduled()
+
+    # Проверяем, что воркеры доступны
+    active_count = sum(len(tasks) for tasks in active_tasks.values()) if active_tasks else 0
+    scheduled_count = sum(len(tasks) for tasks in scheduled_tasks.values()) if scheduled_tasks else 0
 
     stats = {
-        "active_tasks": len(active_tasks) if active_tasks else 0,
-        "scheduled_tasks": len(scheduled_tasks) if scheduled_tasks else 0,
+        "active_tasks": active_count,
+        "scheduled_tasks": scheduled_count,
         "user_id": current_user.id,
         "available_analysis_types": ["enhanced", "quick", "legacy"],
         "max_questions_limit": 50,
