@@ -69,6 +69,43 @@ def create_analysis_report(
     }
 
 
+@router.post("/reports/generate/{connection_id}")
+def generate_analysis_report(
+        connection_id: int,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Генерирует новый отчет анализа для указанного подключения (альтернативный эндпоинт)."""
+    # Проверяем, что подключение существует и принадлежит пользователю
+    connection = crud.get_db_connection_by_id(db, connection_id, current_user.id)
+    if not connection:
+        raise HTTPException(status_code=404, detail="Подключение не найдено")
+
+    # Создаем новый отчет
+    report = crud.create_report(db, current_user.id, connection_id)
+
+    # Запускаем асинхронную задачу анализа
+    task = generate_enhanced_report.delay(
+        report_id=report.id,
+        connection_id=connection_id,
+        user_id=current_user.id
+    )
+
+    # Обновляем отчет с task_id
+    crud.update_report(db, report.id, "PROCESSING", {})
+    report.task_id = task.id
+    db.commit()
+
+    logger.info(f"Создан отчет {report.id} для пользователя {current_user.id} с задачей {task.id}")
+
+    return {
+        "report_id": report.id,
+        "task_id": task.id,
+        "status": "PROCESSING",
+        "message": "Анализ запущен. Проверьте статус через несколько минут."
+    }
+
+
 @router.get("/reports/{report_id}")
 def get_report_by_id(
         report_id: int,
