@@ -231,23 +231,20 @@ def generate_enhanced_report(self, connection_id: int, user_id: int, report_id: 
             meta={'progress': 'Сохранение отчета...', 'stage': 'saving'}
         )
 
-        crud.update_report(db_session, report_id, "COMPLETED", final_report)
-
-        logger.info("[ENHANCED TASK] Report saved successfully")
-
-        self.update_state(
-            state='SUCCESS',
-            meta={
-                'progress': 'Анализ завершен!',
-                'stage': 'completed',
-                'summary': {
-                    'questions_processed': questions_processed,
-                    'findings_count': len(session_memory),
-                    'ml_patterns_found': len(ml_insights_collected),
-                    'domain_detected': domain_context.domain_type
-                }
+        try:
+            # Безопасная сериализация отчета
+            safe_report = safe_json_serialize(final_report)
+            crud.update_report(db_session, report_id, "COMPLETED", safe_report)
+            logger.info("[ENHANCED TASK] Report saved successfully")
+        except Exception as save_error:
+            logger.error(f"Ошибка сохранения отчета: {save_error}")
+            # Сохраняем упрощенную версию отчета
+            simplified_report = {
+                "executive_summary": final_report.get("executive_summary", ""),
+                "error": "Ошибка сериализации полного отчета",
+                "summary": str(final_report)
             }
-        )
+            crud.update_report(db_session, report_id, "COMPLETED", simplified_report)
 
 
     except Exception as e:
@@ -498,6 +495,18 @@ def quick_ml_analysis(self, connection_id: int, user_id: int, report_id: int):
         raise e
     finally:
         db_session.close()
+
+def safe_json_serialize(obj):
+    """Безопасная JSON сериализация с обработкой сложных объектов"""
+    try:
+        import json
+        return json.loads(json.dumps(obj, default=str))
+    except Exception as e:
+        logger.error(f"Ошибка JSON сериализации: {e}")
+        # Возвращаем упрощенную версию
+        if isinstance(obj, dict):
+            return {k: str(v) for k, v in obj.items()}
+        return str(obj)
 
 
 # Обратная совместимость со старой функцией

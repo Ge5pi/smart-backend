@@ -54,6 +54,33 @@ class DataPattern:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
+    def to_dict(self) -> dict:
+        """Конвертирует DataPattern в сериализуемый словарь"""
+        return {
+            "pattern_type": self.pattern_type,
+            "description": self.description,
+            "confidence": float(self.confidence),
+            "tables_involved": self.tables_involved,
+            "columns_involved": self.columns_involved,
+            "metadata": self._serialize_metadata(self.metadata),
+            "timestamp": self.timestamp.isoformat()
+        }
+
+    def _serialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Сериализует метаданные для JSON"""
+        serialized = {}
+        for key, value in metadata.items():
+            if isinstance(value, (list, np.ndarray)):
+                # Конвертируем numpy массивы в обычные списки
+                serialized[key] = [float(x) if isinstance(x, (np.floating, np.integer)) else x for x in value]
+            elif isinstance(value, (np.floating, np.integer)):
+                serialized[key] = float(value)
+            elif isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            else:
+                serialized[key] = value
+        return serialized
+
 
 class MLPatternDetector:
     """Система машинного обучения для обнаружения паттернов в данных"""
@@ -945,24 +972,27 @@ class EnhancedOrchestrator(BaseAgent):
         return filtered
 
     def get_ml_insights_summary(self) -> Dict[str, Any]:
-        """Возвращает сводку ML-инсайтов"""
-
+        """Возвращает сводку ML-инсайтов в сериализуемом формате"""
         pattern_summary = {}
 
         for pattern in self.detected_patterns:
             pattern_type = pattern.pattern_type
             if pattern_type not in pattern_summary:
                 pattern_summary[pattern_type] = []
+
+            # Используем метод to_dict() для сериализации
             pattern_summary[pattern_type].append({
                 'description': pattern.description,
-                'confidence': pattern.confidence,
+                'confidence': float(pattern.confidence),
                 'tables': pattern.tables_involved
             })
 
         return {
             'total_patterns': len(self.detected_patterns),
             'pattern_types': pattern_summary,
-            'high_confidence_patterns': [p for p in self.detected_patterns if p.confidence > 0.8]
+            'high_confidence_patterns': [
+                p.to_dict() for p in self.detected_patterns if p.confidence > 0.8
+            ]
         }
 
     def get_analysis_diversity_report(self, session_memory: list) -> dict:
@@ -1335,11 +1365,7 @@ class EnhancedCritic(BaseAgent):
                     "data_preview": data_preview,
                     "data_stats": data_analysis,
                     "ml_patterns": [
-                        {
-                            "type": p.pattern_type,
-                            "description": p.description,
-                            "confidence": p.confidence
-                        } for p in ml_patterns
+                        p.to_dict() for p in ml_patterns  # Используем to_dict()
                     ],
                     "validation": validation
                 },
