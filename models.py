@@ -37,11 +37,8 @@ class Report(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     task_id = Column(String, unique=True, index=True, nullable=True)
     status = Column(String, default="PENDING")
-    content = Column(JSON, nullable=True)  # Используем content вместо results
+    results = Column(JSON, nullable=True)  # Изменено с content на results
     created_at = Column(DateTime, default=datetime.utcnow)
-    connection = relationship("DatabaseConnection")
-    user = relationship("User")
-    feedbacks = relationship("Feedback", back_populates="report")
 
 class Feedback(Base):
     __tablename__ = "report_feedbacks"

@@ -55,31 +55,21 @@ class DataPattern:
     timestamp: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict:
-        """Конвертирует DataPattern в сериализуемый словарь"""
+        """Унифицированная сериализация совместимая с safe_json_serialize"""
         return {
             "pattern_type": self.pattern_type,
             "description": self.description,
             "confidence": float(self.confidence),
             "tables_involved": self.tables_involved,
             "columns_involved": self.columns_involved,
-            "metadata": self._serialize_metadata(self.metadata),
+            "metadata": self._safe_serialize_metadata(self.metadata),
             "timestamp": self.timestamp.isoformat()
         }
 
-    def _serialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Сериализует метаданные для JSON"""
-        serialized = {}
-        for key, value in metadata.items():
-            if isinstance(value, (list, np.ndarray)):
-                # Конвертируем numpy массивы в обычные списки
-                serialized[key] = [float(x) if isinstance(x, (np.floating, np.integer)) else x for x in value]
-            elif isinstance(value, (np.floating, np.integer)):
-                serialized[key] = float(value)
-            elif isinstance(value, datetime):
-                serialized[key] = value.isoformat()
-            else:
-                serialized[key] = value
-        return serialized
+    def _safe_serialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Безопасная сериализация метаданных"""
+        from tasks import safe_json_serialize
+        return safe_json_serialize(metadata)
 
 
 class MLPatternDetector:

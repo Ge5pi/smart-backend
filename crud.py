@@ -107,11 +107,11 @@ def get_report_by_id(db: Session, report_id: int, user_id: int) -> models.Report
     ).first()
 
 
-def update_report(db: Session, report_id: int, status: str, content: dict):
+def update_report(db: Session, report_id: int, status: str, results: dict):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report:
         db_report.status = status
-        db_report.content = content
+        db_report.results = results
         db.commit()
         db.refresh(db_report)
     return db_report

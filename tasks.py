@@ -498,11 +498,13 @@ def quick_ml_analysis(self, connection_id: int, user_id: int, report_id: int):
     finally:
         db_session.close()
 
+
 def safe_json_serialize(obj):
     """
     Улучшенная функция для безопасной JSON-сериализации, которая рекурсивно
     обрабатывает вложенные структуры и сложные типы данных.
     """
+
     def default_converter(o):
         if isinstance(o, (np.integer, np.int64)):
             return int(o)
@@ -510,9 +512,9 @@ def safe_json_serialize(obj):
             return float(o)
         if isinstance(o, np.ndarray):
             return o.tolist()
-        if hasattr(o, 'isoformat'): # Для дат и времени
+        if hasattr(o, 'isoformat'):  # Для дат и времени
             return o.isoformat()
-        return str(o) # В крайнем случае преобразуем в строку
+        return str(o)  # В крайнем случае преобразуем в строку
 
     try:
         # Используем json.dumps с кастомным конвертером, затем json.loads

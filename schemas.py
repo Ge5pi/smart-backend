@@ -56,8 +56,9 @@ class ReportInfo(ReportBase):
     class Config:
         from_attributes = True
 
+
 class Report(ReportBase):
-    content: Optional[dict] = None
+    results: Optional[dict] = None
 
     class Config:
         from_attributes = True
