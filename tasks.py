@@ -249,29 +249,62 @@ def generate_enhanced_report(self, connection_id: int, user_id: int, report_id: 
             }
         )
 
+
     except Exception as e:
+
         logger.error(f"[ENHANCED TASK ERROR] {e}", exc_info=True)
 
-        # Детальная информация об ошибке
         error_report = {
+
             "error": "Произошла критическая ошибка в улучшенной задаче анализа",
+
             "details": str(e),
-            "stage": "unknown",
-            "type": type(e).__name__
+
+            "stage": getattr(self, 'current_stage', 'unknown'),
+
+            "type": type(e).__name__,
+
+            "exc_info": str(e)  # Добавляем это поле
+
         }
 
-        crud.update_report(db_session, report_id, "FAILED", error_report)
+        # Обновляем отчет ПЕРЕД обновлением состояния задачи
 
-        self.update_state(
-            state='FAILURE',
-            meta={
-                'progress': 'Ошибка выполнения',
-                'error': str(e),
-                'stage': 'error'
-            }
-        )
+        try:
 
-        raise e
+            crud.update_report(db_session, report_id, "FAILED", error_report)
+
+        except Exception as update_error:
+
+            logger.error(f"Ошибка обновления отчета: {update_error}")
+
+        # Обновляем состояние задачи с правильной структурой
+
+        try:
+
+            self.update_state(
+
+                state='FAILURE',
+
+                meta={
+
+                    'progress': 'Ошибка выполнения',
+
+                    'error': str(e),
+
+                    'error_type': type(e).__name__,
+
+                    'stage': 'error'
+
+                }
+
+            )
+
+        except Exception as state_error:
+
+            logger.error(f"Ошибка обновления состояния: {state_error}")
+
+        raise Ignore()
 
     finally:
         db_session.close()

@@ -964,6 +964,29 @@ class EnhancedOrchestrator(BaseAgent):
             'high_confidence_patterns': [p for p in self.detected_patterns if p.confidence > 0.8]
         }
 
+    def get_analysis_diversity_report(self, session_memory: list) -> dict:
+        """Создает отчет о разнообразии проведенного анализа."""
+        analyzed_tables = self._get_analyzed_tables(session_memory)
+
+        return {
+            'total_tables': len(self.table_names),
+            'analyzed_tables': len(analyzed_tables),
+            'coverage_percentage': len(analyzed_tables) / len(self.table_names) * 100 if self.table_names else 0,
+            'table_analysis_distribution': analyzed_tables,
+            'underanalyzed_tables': [t for t in self.table_names if analyzed_tables.get(t, 0) < 2]
+        }
+
+    def _get_analyzed_tables(self, session_memory: list) -> dict:
+        """Подсчитывает количество анализов по каждой таблице."""
+        table_count = {}
+
+        for finding in session_memory:
+            analyzed_tables = finding.get('analyzed_tables', [])
+            for table in analyzed_tables:
+                table_count[table] = table_count.get(table, 0) + 1
+
+        return table_count
+
 
 class EnhancedSQLCoder(BaseAgent):
     """Улучшенный SQL-кодер с валидацией"""
