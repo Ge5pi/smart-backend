@@ -21,6 +21,17 @@ router = APIRouter(
 )
 
 
+@router.get("/connections/", response_model=list[schemas.DatabaseConnectionInfo])
+def get_user_connections(
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Получает все подключения пользователя."""
+    connections = crud.get_db_connections_by_user(db, user_id=current_user.id)
+    logger.info(f"Пользователь {current_user.id} запросил список подключений: {len(connections)} найдено")
+    return connections
+
+
 @router.post("/reports/create")
 def create_analysis_report(
         connection_id: int,
