@@ -414,7 +414,8 @@ class AdaptiveFeedbackSystem:
             if chart_url:
                 self.user_preferences['likes_charts'] = self.user_preferences.get('likes_charts', 0) + 1
 
-            if len(data_preview) > 20:
+            # Безопасная проверка data_preview
+            if data_preview and isinstance(data_preview, list) and len(data_preview) > 20:
                 self.user_preferences['likes_detailed_data'] = self.user_preferences.get('likes_detailed_data', 0) + 1
 
             # Анализируем типы данных

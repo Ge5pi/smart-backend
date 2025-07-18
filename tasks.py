@@ -393,13 +393,13 @@ def generate_executive_summary(session_memory, ml_summary, domain_context, quest
 
 def calculate_confidence_score(finding):
     """Вычисляет оценку уверенности для результата."""
-
     score = 0.5  # Базовая оценка
 
     # Увеличиваем за наличие данных
-    if finding.get('data_preview'):
+    data_preview = finding.get('data_preview')
+    if data_preview:
         score += 0.2
-        if len(finding['data_preview']) > 10:
+        if isinstance(data_preview, list) and len(data_preview) > 10:
             score += 0.1
 
     # Увеличиваем за наличие визуализации
@@ -407,8 +407,9 @@ def calculate_confidence_score(finding):
         score += 0.1
 
     # Увеличиваем за ML-паттерны
-    if finding.get('ml_patterns'):
-        high_conf_patterns = [p for p in finding['ml_patterns'] if p.get('confidence', 0) > 0.7]
+    ml_patterns = finding.get('ml_patterns')
+    if ml_patterns:
+        high_conf_patterns = [p for p in ml_patterns if p.get('confidence', 0) > 0.7]
         if high_conf_patterns:
             score += 0.1
 
