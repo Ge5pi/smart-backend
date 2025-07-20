@@ -135,10 +135,10 @@ def generate_dataframe_report(self, connection_id: int, user_id: int, report_id:
                             }
 
                             # Получаем SmartGPT инсайты
-                            gpt_result = smart_gpt.analyze_findings_with_context(
-                                dataframe_results=result,
-                                business_context=business_context
-                            )
+                            gpt_result = smart_gpt.analyze_findings_with_context(df=df_for_gpt,
+                                                                                 dataframe_results=result,
+                                                                                 business_context=business_context
+                                                                                 )
 
                             smartgpt_insights = {
                                 'business_insights': gpt_result.get('business_insights', ''),

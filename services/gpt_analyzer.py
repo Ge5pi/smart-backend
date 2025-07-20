@@ -535,3 +535,39 @@ class SmartGPTAnalyzer:
                 "confidence": "low",
                 "analysis_type": "general_insights"
             }
+
+    def analyze_findings_with_context(self, df: pd.DataFrame, dataframe_results: Dict, business_context: Dict) -> Dict:
+        """
+        Анализирует данные с контекстом, делегируя задачу специализированным методам.
+        """
+        analysis_type = business_context.get('analysis_type', 'general_insights')
+        table_name = business_context.get('table_focus', 'данных')
+
+        try:
+            # Вызов соответствующего внутреннего метода анализа
+            # analyze_data_with_gpt уже содержит нужную логику делегирования
+            gpt_response = self.analyze_data_with_gpt(df, table_name, analysis_type, business_context)
+            raw_analysis = gpt_response.get("gpt_analysis", "")
+
+            # Простое извлечение структурированных данных из текста (можно усложнить)
+            action_items = re.findall(r"(?:Действие|Предложи|Рекомендую)[\s\d\.\-:]*(.*?)\n", raw_analysis,
+                                      re.IGNORECASE)
+            opportunities = re.findall(r"(?:Возможност)[\s\d\.\-:]*(.*?)\n", raw_analysis, re.IGNORECASE)
+
+            return {
+                'business_insights': raw_analysis,
+                'action_items': [item.strip() for item in action_items if item.strip()],
+                'risk_assessment': "Оценка рисков требует более глубокого анализа.",
+                'opportunities': [item.strip() for item in opportunities if item.strip()],
+                'confidence': gpt_response.get("confidence", "medium"),
+                'business_context': business_context
+            }
+
+        except Exception as e:
+            logger.error(f"[SMARTGPT] Ошибка в analyze_findings_with_context: {e}")
+            return {
+                'business_insights': f'SmartGPT анализ временно недоступен: {str(e)}',
+                'action_items': [],
+                'opportunities': [],
+                'confidence': 'low'
+            }
