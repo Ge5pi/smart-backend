@@ -8,7 +8,7 @@ from datetime import datetime
 import re
 import sys
 import os
-from services.gpt_analyzer import GPTAnalyzer
+from services.gpt_analyzer import SmartGPTAnalyzer  # Обновленный импорт
 
 # Добавляем путь для импорта utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,36 +23,197 @@ class DataFrameAnalyzer:
     def __init__(self, df_manager: DataFrameManager):
         self.df_manager = df_manager
         self.analysis_cache = {}
-        self.gpt_analyzer = GPTAnalyzer()
+        self.smart_gpt = SmartGPTAnalyzer()
+
+    def _detect_user_focus(self, question: str) -> str:
+        """Определяет основной фокус пользователя"""
+        question_lower = question.lower()
+
+        if any(word in question_lower for word in ['проблем', 'ошибк', 'аномали', 'неправиль']):
+            return 'problem_solving'
+        elif any(word in question_lower for word in ['возможност', 'потенциал', 'рост', 'улучшен']):
+            return 'opportunity_discovery'
+        elif any(word in question_lower for word in ['сравн', 'различ', 'vs', 'против']):
+            return 'comparative_analysis'
+        elif any(word in question_lower for word in ['тренд', 'динамик', 'изменен', 'развити']):
+            return 'trend_analysis'
+        else:
+            return 'general_insights'
+
+    def _analyze_statistical_insights(self, question: str) -> Dict[str, Any]:
+        """Углубленный статистический анализ с GPT интерпретацией"""
+        tables_mentioned = self._extract_mentioned_tables(question)
+        if not tables_mentioned:
+            tables_mentioned = [max(self.df_manager.tables.items(), key=lambda x: len(x[1]))[0]]
+
+        main_table = tables_mentioned[0]
+        df = self.df_manager.tables[main_table]
+
+        # Расширенный статистический анализ
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        statistical_results = []
+
+        if len(numeric_cols) > 0:
+            # Основная статистика
+            desc_stats = df[numeric_cols].describe()
+
+            # Дополнительные метрики
+            for col in numeric_cols:
+                col_data = df[col].dropna()
+                if len(col_data) > 5:
+                    skewness = col_data.skew()
+                    kurtosis = col_data.kurtosis()
+
+                    statistical_results.append({
+                        'column': col,
+                        'mean': float(col_data.mean()),
+                        'median': float(col_data.median()),
+                        'std': float(col_data.std()),
+                        'skewness': float(skewness),
+                        'kurtosis': float(kurtosis),
+                        'distribution_type': self._classify_distribution(skewness, kurtosis),
+                        'outliers_count': len(self._detect_outliers_iqr(col_data)),
+                        'coefficient_variation': float(col_data.std() / col_data.mean()) if col_data.mean() != 0 else 0
+                    })
+
+        stats_df = pd.DataFrame(statistical_results)
+
+        # Корреляционная матрица с интерпретацией
+        correlations = self._analyze_correlations_single_table(df, main_table)
+
+        summary = f"📊 Статистический анализ таблицы '{main_table}' завершен"
+
+        return {
+            'question': question,
+            'data': clean_dataframe_for_json(stats_df),
+            'summary': summary,
+            'analyzed_tables': [main_table],
+            'statistical_insights': statistical_results,
+            'correlations': correlations,
+            'chart_data': self._prepare_chart_data_safe(stats_df, 'bar', 'column', 'mean')
+        }
+
+    def _detect_outliers_iqr(self, data: pd.Series) -> List:
+        """Обнаружение выбросов методом IQR"""
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        return data[(data < lower_bound) | (data > upper_bound)].tolist()
+
+    def _classify_distribution(self, skewness: float, kurtosis: float) -> str:
+        """Классифицирует тип распределения"""
+        if abs(skewness) < 0.5 and abs(kurtosis) < 0.5:
+            return 'нормальное'
+        elif skewness > 0.5:
+            return 'правосторонняя асимметрия'
+        elif skewness < -0.5:
+            return 'левосторонняя асимметрия'
+        elif kurtosis > 0.5:
+            return 'высокий эксцесс'
+        elif kurtosis < -0.5:
+            return 'низкий эксцесс'
+        else:
+            return 'смешанное'
+
+    def _create_business_context(self, question: str, analysis_type: str) -> Dict[str, Any]:
+        """Создает бизнес-контекст для умного GPT-анализа"""
+        context = {
+            'question_intent': question,
+            'analysis_type': analysis_type,
+            'user_focus': self._detect_user_focus(question)
+        }
+
+        # Добавляем информацию о домене на основе названий таблиц
+        table_names = list(self.df_manager.tables.keys())
+        context['entities'] = table_names
+
+        # Определяем приоритетные метрики на основе вопроса
+        question_lower = question.lower()
+        if any(word in question_lower for word in ['прибыль', 'доход', 'стоимость', 'цена']):
+            context['priority_metrics'] = ['financial_performance', 'profitability']
+        elif any(word in question_lower for word in ['клиент', 'пользователь', 'покупатель']):
+            context['priority_metrics'] = ['customer_satisfaction', 'retention']
+        elif any(word in question_lower for word in ['продажи', 'конверсия', 'воронка']):
+            context['priority_metrics'] = ['sales_performance', 'conversion_rates']
+        else:
+            context['priority_metrics'] = ['general_performance']
+
+        return context
 
     def analyze_question(self, question: str) -> Dict[str, Any]:
-        """Анализирует вопрос и возвращает результат на основе DataFrame операций"""
-
+        """Анализирует вопрос и возвращает результат с умным GPT-анализом"""
         logger.info(f"Анализ вопроса: {question}")
 
         # Определяем тип анализа
         analysis_type = self._categorize_question(question)
 
         try:
+            # Выполняем базовый DataFrame анализ
             if analysis_type == 'overview':
-                return self._analyze_overview()
+                base_results = self._analyze_overview()
             elif analysis_type == 'table_analysis':
                 table_name = self._extract_table_name(question)
-                return self._analyze_single_table(table_name)
+                base_results = self._analyze_single_table(table_name)
             elif analysis_type == 'relationship_analysis':
-                return self._analyze_relationships()
+                base_results = self._analyze_relationships()
             elif analysis_type == 'aggregation':
-                return self._analyze_aggregations(question)
+                base_results = self._analyze_aggregations(question)
             elif analysis_type == 'trend_analysis':
-                return self._analyze_trends(question)
+                base_results = self._analyze_trends(question)
             elif analysis_type == 'correlation':
-                return self._analyze_correlations(question)
+                base_results = self._analyze_correlations(question)
             elif analysis_type == 'comparison':
-                return self._analyze_comparison(question)
+                base_results = self._analyze_comparison(question)
             elif analysis_type == 'anomalies':
-                return self._analyze_anomalies(question)
+                base_results = self._analyze_anomalies(question)
+            elif analysis_type == 'business_insights':
+                base_results = self._analyze_business_metrics(question)
+            elif analysis_type == 'statistical_insights':
+                base_results = self._analyze_statistical_insights(question)
+            elif analysis_type == 'predictive_analysis':
+                base_results = self._analyze_predictive_patterns(question)
+            elif analysis_type == 'data_quality':
+                base_results = self._analyze_data_quality_comprehensive(question)
             else:
-                return self._analyze_general(question)
+                base_results = self._analyze_general(question)
+
+            # Применяем умный GPT-анализ к результатам
+            if not base_results.get('error') and base_results.get('data'):
+                try:
+                    # Создаем бизнес-контекст для GPT
+                    business_context = self._create_business_context(question, analysis_type)
+
+                    # Получаем умные инсайты
+                    smart_analysis = self.smart_gpt.analyze_findings_with_context(
+                        dataframe_results=base_results,
+                        business_context=business_context
+                    )
+
+                    # Обогащаем результаты GPT-инсайтами
+                    base_results['smart_gpt_insights'] = smart_analysis
+                    base_results['business_insights'] = smart_analysis.get('business_insights', '')
+                    base_results['action_items'] = smart_analysis.get('action_items', [])
+                    base_results['risk_assessment'] = smart_analysis.get('risk_assessment', '')
+                    base_results['opportunities'] = smart_analysis.get('opportunities', [])
+                    base_results['gpt_confidence'] = smart_analysis.get('confidence', 'medium')
+
+                    # Обновляем summary с бизнес-инсайтами
+                    if smart_analysis.get('business_insights'):
+                        base_results['summary'] = (
+                            f"**БИЗНЕС-АНАЛИЗ:**\n{smart_analysis['business_insights']}\n\n"
+                            f"**ТЕХНИЧЕСКИЕ ДАННЫЕ:**\n{base_results.get('summary', '')}"
+                        )
+
+                except Exception as gpt_error:
+                    logger.error(f"Ошибка умного GPT-анализа: {gpt_error}")
+                    base_results['smart_gpt_insights'] = {
+                        'business_insights': 'GPT-анализ временно недоступен',
+                        'confidence': 'low'
+                    }
+
+            return base_results
 
         except Exception as e:
             logger.error(f"Ошибка анализа вопроса '{question}': {e}")
@@ -63,6 +224,211 @@ class DataFrameAnalyzer:
                 'summary': f'Не удалось проанализировать: {str(e)}',
                 'analyzed_tables': []
             }
+
+    def _analyze_data_quality_comprehensive(self, question: str) -> Dict[str, Any]:
+        """Комплексный анализ качества данных"""
+        tables_mentioned = self._extract_mentioned_tables(question)
+        if not tables_mentioned:
+            tables_mentioned = list(self.df_manager.tables.keys())
+
+        quality_results = []
+
+        for table_name in tables_mentioned:
+            df = self.df_manager.tables[table_name]
+
+            # Базовые метрики качества
+            total_cells = len(df) * len(df.columns)
+            null_cells = df.isnull().sum().sum()
+            duplicate_rows = df.duplicated().sum()
+
+            # Анализ по типам колонок
+            numeric_quality = self._analyze_numeric_quality(df)
+            categorical_quality = self._analyze_categorical_quality(df)
+
+            # Целостность данных
+            integrity_issues = []
+
+            # Проверка на отрицательные значения где они не должны быть
+            for col in df.select_dtypes(include=[np.number]).columns:
+                if 'price' in col.lower() or 'amount' in col.lower() or 'quantity' in col.lower():
+                    negative_count = (df[col] < 0).sum()
+                    if negative_count > 0:
+                        integrity_issues.append(f"{col}: {negative_count} отрицательных значений")
+
+            quality_score = self._calculate_quality_score(
+                null_percentage=null_cells / total_cells * 100,
+                duplicate_percentage=duplicate_rows / len(df) * 100,
+                integrity_issues_count=len(integrity_issues)
+            )
+
+            quality_results.append({
+                'table': table_name,
+                'quality_score': round(quality_score, 1),
+                'completeness': round((1 - null_cells / total_cells) * 100, 1),
+                'uniqueness': round((1 - duplicate_rows / len(df)) * 100, 1),
+                'integrity_issues': len(integrity_issues),
+                'numeric_quality': numeric_quality,
+                'categorical_quality': categorical_quality,
+                'recommendations': self._generate_quality_recommendations(
+                    null_cells / total_cells * 100, duplicate_rows / len(df) * 100, integrity_issues
+                )
+            })
+
+        quality_df = pd.DataFrame(quality_results)
+
+        avg_quality = quality_df['quality_score'].mean() if not quality_df.empty else 0
+        summary = f"🔍 Анализ качества данных: средний балл качества {avg_quality:.1f}/100"
+
+        return {
+            'question': question,
+            'data': clean_dataframe_for_json(quality_df),
+            'summary': summary,
+            'analyzed_tables': tables_mentioned,
+            'quality_metrics': quality_results,
+            'chart_data': self._prepare_chart_data_safe(quality_df, 'bar', 'table', 'quality_score')
+        }
+
+    def _generate_quality_recommendations(self, null_pct: float, duplicate_pct: float, issues: List[str]) -> List[str]:
+        """Генерирует рекомендации по улучшению качества данных"""
+        recommendations = []
+
+        if null_pct > 10:
+            recommendations.append("Критически высокий уровень пропусков - требуется стратегия заполнения")
+        elif null_pct > 5:
+            recommendations.append("Умеренный уровень пропусков - рассмотрите импутацию")
+
+        if duplicate_pct > 5:
+            recommendations.append("Обнаружены дубликаты - требуется дедупликация")
+
+        if issues:
+            recommendations.append("Найдены проблемы целостности данных - требуется валидация")
+
+        if not recommendations:
+            recommendations.append("Качество данных в норме")
+
+        return recommendations
+
+    def _analyze_categorical_quality(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Анализ качества категориальных данных"""
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        if len(categorical_cols) == 0:
+            return {'columns_analyzed': 0}
+
+        categorical_issues = []
+        for col in categorical_cols:
+            # Проверка на слишком много уникальных значений
+            unique_ratio = df[col].nunique() / len(df)
+            if unique_ratio > 0.8:
+                categorical_issues.append(f"{col}: подозрительно много уникальных значений ({unique_ratio:.1%})")
+
+        return {
+            'columns_analyzed': len(categorical_cols),
+            'issues_found': len(categorical_issues),
+            'issues': categorical_issues
+        }
+
+    def _calculate_quality_score(self, null_percentage: float, duplicate_percentage: float,
+                                 integrity_issues_count: int) -> float:
+        """Рассчитывает общий балл качества данных"""
+        base_score = 100.0
+
+        # Снижаем за пропуски
+        base_score -= null_percentage * 0.5
+
+        # Снижаем за дубликаты
+        base_score -= duplicate_percentage * 0.3
+
+        # Снижаем за проблемы целостности
+        base_score -= integrity_issues_count * 5
+
+        return max(0.0, base_score)
+
+
+    def _analyze_numeric_quality(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Анализ качества числовых данных"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) == 0:
+            return {'columns_analyzed': 0}
+
+        numeric_issues = []
+        for col in numeric_cols:
+            inf_count = np.isinf(df[col]).sum()
+            if inf_count > 0:
+                numeric_issues.append(f"{col}: {inf_count} бесконечных значений")
+
+        return {
+            'columns_analyzed': len(numeric_cols),
+            'issues_found': len(numeric_issues),
+            'issues': numeric_issues
+        }
+
+    def _analyze_predictive_patterns(self, question: str) -> Dict[str, Any]:
+        """Анализ паттернов для предсказательной аналитики"""
+        tables_mentioned = self._extract_mentioned_tables(question)
+        if not tables_mentioned:
+            tables_mentioned = list(self.df_manager.tables.keys())
+
+        predictive_insights = []
+
+        for table_name in tables_mentioned:
+            df = self.df_manager.tables[table_name]
+
+            # Поиск временных рядов
+            date_cols = self._find_date_columns(df)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+            if date_cols and len(numeric_cols) > 0:
+                date_col = date_cols[0]
+                try:
+                    df_temp = df.copy()
+                    df_temp[date_col] = pd.to_datetime(df_temp[date_col], errors='coerce')
+                    df_clean = df_temp.dropna(subset=[date_col])
+
+                    if len(df_clean) > 10:  # Минимум данных для анализа
+                        # Анализ трендов по месяцам
+                        df_clean['period'] = df_clean[date_col].dt.to_period('M')
+
+                        for num_col in numeric_cols[:3]:  # Ограничиваем для производительности
+                            monthly_data = df_clean.groupby('period')[num_col].agg(
+                                ['count', 'sum', 'mean']).reset_index()
+
+                            if len(monthly_data) > 3:
+                                # Простой анализ тренда
+                                trend_data = monthly_data['mean'].values
+                                trend_direction = 'растущий' if trend_data[-1] > trend_data[0] else 'убывающий'
+
+                                # Сезонность (упрощенная)
+                                seasonality_score = np.std(trend_data) / np.mean(trend_data) if np.mean(
+                                    trend_data) > 0 else 0
+
+                                predictive_insights.append({
+                                    'table': table_name,
+                                    'metric': num_col,
+                                    'trend_direction': trend_direction,
+                                    'seasonality_score': round(float(seasonality_score), 3),
+                                    'periods_analyzed': len(monthly_data),
+                                    'predictability': 'высокая' if seasonality_score < 0.3 else 'средняя' if seasonality_score < 0.6 else 'низкая',
+                                    'data_points': len(df_clean)
+                                })
+
+                except Exception as e:
+                    logger.error(f"Ошибка анализа временного ряда в {table_name}: {e}")
+
+        predictive_df = pd.DataFrame(predictive_insights)
+
+        if not predictive_df.empty:
+            summary = f"🔮 Анализ предсказательных паттернов: найдено {len(predictive_insights)} временных рядов"
+        else:
+            summary = "Временные данные для предсказательного анализа не найдены"
+
+        return {
+            'question': question,
+            'data': clean_dataframe_for_json(predictive_df),
+            'summary': summary,
+            'analyzed_tables': tables_mentioned,
+            'predictive_patterns': predictive_insights,
+            'chart_data': self._prepare_chart_data_safe(predictive_df, 'scatter', 'seasonality_score', 'data_points')
+        }
 
     def _analyze_overview(self) -> Dict[str, Any]:
         """Общий обзор данных"""

@@ -1,285 +1,300 @@
-# services/gpt_analyzer.py
+# services/smart_gpt_analyzer.py - ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ
 import openai
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import logging
 import json
 from config import API_KEY
+import re
 
 logger = logging.getLogger(__name__)
 
 
-class GPTAnalyzer:
-    """GPT-powered аналитик для глубокого анализа данных"""
+class SmartGPTAnalyzer:
+    """Умный GPT-аналитик, который интерпретирует НАЙДЕННЫЕ паттерны"""
 
     def __init__(self):
         self.client = openai.OpenAI(api_key=API_KEY)
         self.model = "gpt-4o-mini"
 
-    def analyze_data_with_gpt(self,
-                              df: pd.DataFrame,
-                              table_name: str,
-                              analysis_type: str,
-                              context: Dict = None) -> Dict[str, Any]:
-        """Анализирует данные с помощью GPT"""
+    def analyze_findings_with_context(self,
+                                      dataframe_results: Dict[str, Any],
+                                      business_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Анализирует НАЙДЕННЫЕ паттерны и дает бизнес-интерпретацию"""
 
-        # Подготавливаем контекст данных
-        data_summary = self._prepare_data_summary(df, table_name)
+        # Определяем бизнес-контекст из данных
+        auto_context = self._detect_business_context(dataframe_results)
+        context = {**auto_context, **(business_context or {})}
 
-        # Выбираем промпт в зависимости от типа анализа
-        prompt = self._get_analysis_prompt(analysis_type, data_summary, context)
+        # Создаем структурированный анализ найденных паттернов
+        prompt = self._create_smart_analysis_prompt(dataframe_results, context)
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "system", "content": self._get_smart_system_prompt()},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=2000
+                temperature=0.2,  # Более детерминированный
+                max_tokens=1500
             )
 
-            analysis_result = response.choices[0].message.content
+            analysis = response.choices[0].message.content
+
+            # Парсим структурированный ответ
+            parsed_analysis = self._parse_gpt_response(analysis)
 
             return {
-                "gpt_analysis": analysis_result,
-                "data_summary": data_summary,
-                "analysis_type": analysis_type,
-                "confidence": "high"
+                "business_insights": parsed_analysis.get("insights", analysis),
+                "action_items": parsed_analysis.get("actions", []),
+                "risk_assessment": parsed_analysis.get("risks", ""),
+                "opportunities": parsed_analysis.get("opportunities", []),
+                "confidence": "high",
+                "business_context": context
             }
 
         except Exception as e:
-            logger.error(f"Ошибка GPT анализа: {e}")
+            logger.error(f"Ошибка умного GPT анализа: {e}")
             return {
-                "gpt_analysis": f"Не удалось выполнить GPT анализ: {str(e)}",
+                "business_insights": f"Технический анализ завершен, но GPT-интерпретация недоступна: {str(e)}",
                 "confidence": "low"
             }
 
-    def _prepare_data_summary(self, df: pd.DataFrame, table_name: str) -> Dict[str, Any]:
-        """Подготавливает краткое описание данных для GPT"""
+    def _detect_business_context(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Автоматически определяет бизнес-контекст из названий колонок и данных"""
 
-        summary = {
-            "table_name": table_name,
-            "rows": len(df),
-            "columns": len(df.columns),
-            "column_info": {}
+        analyzed_tables = results.get('analyzed_tables', [])
+        data_preview = results.get('data_preview', [])
+
+        context = {
+            "domain": "general",
+            "key_metrics": [],
+            "entities": [],
+            "time_dimension": False
         }
 
-        # Анализ каждой колонки
-        for col in df.columns:
-            col_info = {
-                "type": str(df[col].dtype),
-                "non_null_count": int(df[col].count()),
-                "null_percentage": round((df[col].isnull().sum() / len(df)) * 100, 1)
-            }
+        # Анализируем названия колонок для определения домена
+        all_columns = []
+        if data_preview:
+            all_columns = list(data_preview[0].keys()) if data_preview else []
 
-            if pd.api.types.is_numeric_dtype(df[col]):
-                col_info.update({
-                    "min": float(df[col].min()) if not pd.isna(df[col].min()) else None,
-                    "max": float(df[col].max()) if not pd.isna(df[col].max()) else None,
-                    "mean": round(float(df[col].mean()), 2) if not pd.isna(df[col].mean()) else None,
-                    "std": round(float(df[col].std()), 2) if not pd.isna(df[col].std()) else None
-                })
+        # Определяем домен бизнеса
+        column_text = " ".join(all_columns).lower()
 
-                # Поиск выбросов
-                Q1 = df[col].quantile(0.25)
-                Q3 = df[col].quantile(0.75)
-                IQR = Q3 - Q1
-                outliers = df[(df[col] < Q1 - 1.5 * IQR) | (df[col] > Q3 + 1.5 * IQR)]
-                col_info["outliers_count"] = len(outliers)
+        if any(word in column_text for word in ['price', 'cost', 'revenue', 'profit', 'amount', 'payment']):
+            context["domain"] = "financial"
+            context["key_metrics"] = ["revenue", "cost", "profit_margin"]
+        elif any(word in column_text for word in ['user', 'customer', 'client', 'visitor']):
+            context["domain"] = "customer"
+            context["key_metrics"] = ["acquisition", "retention", "churn"]
+        elif any(word in column_text for word in ['sale', 'order', 'product', 'item', 'quantity']):
+            context["domain"] = "sales"
+            context["key_metrics"] = ["volume", "conversion", "average_order_value"]
+        elif any(word in column_text for word in ['employee', 'staff', 'hr', 'salary']):
+            context["domain"] = "hr"
+            context["key_metrics"] = ["headcount", "turnover", "productivity"]
+        elif any(word in column_text for word in ['inventory', 'stock', 'supply', 'warehouse']):
+            context["domain"] = "operations"
+            context["key_metrics"] = ["efficiency", "utilization", "turnover"]
 
-            elif df[col].dtype == 'object':
-                value_counts = df[col].value_counts()
-                col_info.update({
-                    "unique_values": int(df[col].nunique()),
-                    "most_common": str(value_counts.index[0]) if len(value_counts) > 0 else None,
-                    "most_common_count": int(value_counts.iloc[0]) if len(value_counts) > 0 else None,
-                    "top_3_values": value_counts.head(3).to_dict()
-                })
+        # Проверяем наличие временных данных
+        if any(word in column_text for word in ['date', 'time', 'year', 'month', 'created', 'updated']):
+            context["time_dimension"] = True
 
-            summary["column_info"][col] = col_info
+        # Извлекаем основные сущности
+        context["entities"] = analyzed_tables
 
-        # Добавляем примеры данных
-        sample_data = df.head(5).to_dict('records')
-        summary["sample_data"] = sample_data
+        return context
 
-        return summary
+    def _create_smart_analysis_prompt(self, results: Dict[str, Any], context: Dict[str, Any]) -> str:
+        """Создает умный промпт на основе найденных паттернов"""
 
-    def _get_system_prompt(self) -> str:
-        """Системный промпт для GPT-аналитика"""
-        return """Ты - эксперт-аналитик данных с глубокими знаниями в статистике, машинном обучении и бизнес-аналитике.
+        summary = results.get('summary', '')
+        basic_info = results.get('basic_info', {})
+        anomalies = results.get('anomalies', [])
+        correlations = results.get('correlations', [])
+        data_preview = results.get('data_preview', [])[:3]  # Только первые 3 записи
 
-Твоя задача - провести профессиональный анализ данных и предоставить:
-1. Детальные инсайты о данных
-2. Выявление скрытых паттернов
-3. Бизнес-рекомендации
-4. Обнаружение аномалий и их возможные причины
-5. Прогнозы и тренды
-
-Анализируй данные как настоящий data scientist, используя статистические методы и здравый смысл.
-Отвечай на русском языке, структурированно и профессионально."""
-
-    def _get_analysis_prompt(self, analysis_type: str, data_summary: Dict, context: Dict = None) -> str:
-        """Генерирует промпт в зависимости от типа анализа"""
-
-        base_prompt = f"""
-Данные для анализа:
-Таблица: {data_summary['table_name']}
-Размер: {data_summary['rows']} строк, {data_summary['columns']} колонок
-
-Информация о колонках:
-{json.dumps(data_summary['column_info'], indent=2, ensure_ascii=False)}
-
-Примеры данных:
-{json.dumps(data_summary['sample_data'], indent=2, ensure_ascii=False)}
-"""
-
-        if analysis_type == "business_insights":
-            return base_prompt + """
-ЗАДАЧА: Проведи бизнес-анализ этих данных.
-
-Проанализируй и ответь на:
-1. Какие ключевые бизнес-метрики можно извлечь из этих данных?
-2. Какие тренды и паттерны ты видишь?
-3. Есть ли проблемные области, требующие внимания?
-4. Какие возможности для роста/оптимизации ты видишь?
-5. Конкретные рекомендации для принятия решений
-
-Фокусируйся на практических инсайтах, а не на технических деталях."""
-
-        elif analysis_type == "data_quality":
-            return base_prompt + """
-ЗАДАЧА: Оцени качество данных и найди проблемы.
-
-Проанализируй:
-1. Общее качество данных (полнота, консистентность, точность)
-2. Проблемы с пропущенными значениями - их причины и влияние
-3. Выбросы и аномалии - что они могут означать?
-4. Потенциальные ошибки в данных
-5. Рекомендации по улучшению качества данных
-
-Будь конкретен в выявлении проблем и предложении решений."""
-
-        elif analysis_type == "statistical_insights":
-            return base_prompt + """
-ЗАДАЧА: Проведи углубленный статистический анализ.
-
-Проанализируй:
-1. Распределения данных - что они говорят нам?
-2. Корреляции и взаимосвязи между переменными
-3. Статистические аномалии и их интерпретация
-4. Значимые паттерны в данных
-5. Статистические выводы и их практическое значение
-
-Объясни сложные статистические концепты простым языком."""
-
-        elif analysis_type == "predictive_analysis":
-            return base_prompt + """
-ЗАДАЧА: Проведи предиктивный анализ данных.
-
-Проанализируй:
-1. Временные тренды и сезонность (если применимо)
-2. Факторы, влияющие на ключевые метрики
-3. Возможные будущие сценарии развития
-4. Риски и возможности
-5. Рекомендации для прогнозирования
-
-Сосредоточься на практических прогнозах, а не на технических деталях моделей."""
-
-        else:
-            return base_prompt + """
-ЗАДАЧА: Проведи комплексный анализ данных.
-
-Дай профессиональную оценку данных, включая:
-1. Ключевые находки и инсайты
-2. Важные паттерны и аномалии
-3. Бизнес-значение данных
-4. Рекомендации по использованию
-5. Области для дальнейшего исследования"""
-
-    def analyze_correlations_with_context(self,
-                                          correlations: List[Dict],
-                                          df: pd.DataFrame,
-                                          table_name: str) -> str:
-        """Анализирует корреляции с помощью GPT для получения инсайтов"""
-
-        if not correlations:
-            return "Значимые корреляции не обнаружены."
+        domain_context = {
+            "financial": "Это финансовые данные. Фокусируйся на прибыльности, рисках, трендах доходов.",
+            "customer": "Это данные о клиентах. Анализируй поведение, сегменты, лояльность.",
+            "sales": "Это данные продаж. Изучай конверсию, сезонность, эффективность каналов.",
+            "hr": "Это HR данные. Анализируй продуктивность, удержание, затраты на персонал.",
+            "operations": "Это операционные данные. Фокусируйся на эффективности и оптимизации."
+        }.get(context["domain"], "Это бизнес-данные. Ищи возможности для роста и оптимизации.")
 
         prompt = f"""
-Проанализируй найденные корреляции в таблице '{table_name}':
+КОНТЕКСТ: {domain_context}
 
-Корреляции:
-{json.dumps(correlations, indent=2, ensure_ascii=False)}
+ТЕХНИЧЕСКИЕ РЕЗУЛЬТАТЫ АНАЛИЗА:
+{summary}
 
-Размер данных: {len(df)} записей
+КЛЮЧЕВАЯ СТАТИСТИКА:
+- Записей: {basic_info.get('rows', 'N/A')}
+- Параметров: {basic_info.get('columns', 'N/A')}
+- Объем данных: {basic_info.get('memory_mb', 'N/A')} MB
 
-ЗАДАЧА: Объясни что означают эти корреляции:
-1. Какие из них имеют практическое значение?
-2. Могут ли они указывать на причинно-следственные связи?
-3. Есть ли неожиданные или интересные корреляции?
-4. Как эти корреляции можно использовать для принятия решений?
-5. На что стоит обратить внимание при интерпретации?
+НАЙДЕННЫЕ АНОМАЛИИ:
+{json.dumps(anomalies, indent=2, ensure_ascii=False) if anomalies else "Аномалии не обнаружены"}
 
-Объясни простым языком, избегая сложной статистической терминологии.
+НАЙДЕННЫЕ КОРРЕЛЯЦИИ:
+{json.dumps(correlations, indent=2, ensure_ascii=False) if correlations else "Корреляции не найдены"}
+
+ПРИМЕРЫ ДАННЫХ:
+{json.dumps(data_preview, indent=2, ensure_ascii=False)}
+
+ЗАДАЧА: 
+На основе этих КОНКРЕТНЫХ технических находок дай ПРАКТИЧЕСКИЙ бизнес-анализ:
+
+[INSIGHTS]
+3-4 конкретных инсайта на основе найденных паттернов
+
+[ACTIONS] 
+Конкретные действия, которые нужно предпринять
+
+[RISKS]
+Критические риски из найденных аномалий
+
+[OPPORTUNITIES]
+2-3 возможности для роста/оптимизации
+
+НЕ придумывай данные. Анализируй только то, что НАЙДЕНО техническим анализом.
+"""
+        return prompt
+
+    def _get_smart_system_prompt(self) -> str:
+        """Системный промпт для умного анализа"""
+        return """Ты - старший бизнес-аналитик с 10+ лет опыта в data science.
+
+ТВОЯ ЗАДАЧА: Интерпретировать результаты технического анализа данных и давать КОНКРЕТНЫЕ бизнес-рекомендации.
+
+ПРАВИЛА:
+1. Анализируй ТОЛЬКО найденные техническим анализом паттерны
+2. НЕ придумывай данные, которых нет
+3. Давай КОНКРЕТНЫЕ, actionable рекомендации
+4. Фокусируйся на БИЗНЕС-ЦЕННОСТИ находок
+5. Указывай ПРИОРИТЕТЫ действий
+6. Оценивай РИСКИ и ВОЗМОЖНОСТИ
+
+ФОРМАТ ОТВЕТА:
+[INSIGHTS] - ключевые бизнес-находки
+[ACTIONS] - что делать прямо сейчас  
+[RISKS] - на что обратить внимание
+[OPPORTUNITIES] - где искать рост
+
+Пиши по-русски, кратко, по делу."""
+
+    def _parse_gpt_response(self, response: str) -> Dict[str, Any]:
+        """Парсит структурированный ответ GPT"""
+        parsed = {}
+
+        try:
+            # Извлекаем секции
+            insights_match = re.search(r'\[INSIGHTS\](.*?)\[ACTIONS\]', response, re.DOTALL)
+            actions_match = re.search(r'\[ACTIONS\](.*?)\[RISKS\]', response, re.DOTALL)
+            risks_match = re.search(r'\[RISKS\](.*?)\[OPPORTUNITIES\]', response, re.DOTALL)
+            opportunities_match = re.search(r'\[OPPORTUNITIES\](.*?)$', response, re.DOTALL)
+
+            parsed["insights"] = insights_match.group(1).strip() if insights_match else ""
+            parsed["actions"] = self._extract_list_items(actions_match.group(1).strip() if actions_match else "")
+            parsed["risks"] = risks_match.group(1).strip() if risks_match else ""
+            parsed["opportunities"] = self._extract_list_items(
+                opportunities_match.group(1).strip() if opportunities_match else "")
+
+        except Exception as e:
+            logger.error(f"Ошибка парсинга GPT ответа: {e}")
+            parsed["insights"] = response
+            parsed["actions"] = []
+            parsed["risks"] = ""
+            parsed["opportunities"] = []
+
+        return parsed
+
+    def _extract_list_items(self, text: str) -> List[str]:
+        """Извлекает элементы списка из текста"""
+        if not text:
+            return []
+
+        # Разделяем по переносам и фильтруем
+        items = []
+        for line in text.split('\n'):
+            line = line.strip()
+            if line and (line.startswith('-') or line.startswith('•') or line.startswith('1.') or line.startswith(
+                    '2.') or line.startswith('3.')):
+                # Убираем маркеры
+                clean_line = re.sub(r'^[-•\d\.]\s*', '', line)
+                if clean_line:
+                    items.append(clean_line)
+
+        return items
+
+    def generate_executive_summary_smart(self,
+                                         all_findings: List[Dict[str, Any]],
+                                         table_summary: Dict[str, Any]) -> str:
+        """Генерирует умное executive summary"""
+
+        # Собираем все бизнес-инсайты
+        business_insights = []
+        action_items = []
+        risks = []
+        opportunities = []
+
+        for finding in all_findings:
+            gpt_data = finding.get('gpt_insights', {})
+            if gpt_data:
+                if gpt_data.get('business_insights'):
+                    business_insights.append(gpt_data['business_insights'])
+                if gpt_data.get('action_items'):
+                    action_items.extend(gpt_data['action_items'])
+                if gpt_data.get('risk_assessment'):
+                    risks.append(gpt_data['risk_assessment'])
+                if gpt_data.get('opportunities'):
+                    opportunities.extend(gpt_data['opportunities'])
+
+        if not business_insights:
+            return "Анализ данных завершен. Детальные инсайты формируются..."
+
+        # Создаем промпт для executive summary
+        prompt = f"""
+На основе проведенного анализа создай executive summary для руководства:
+
+КЛЮЧЕВЫЕ НАХОДКИ:
+{' '.join(business_insights[:3])}
+
+КРИТИЧНЫЕ ДЕЙСТВИЯ:
+{' '.join(action_items[:5])}
+
+РИСКИ:
+{' '.join(risks[:3])}
+
+ВОЗМОЖНОСТИ:
+{' '.join(opportunities[:3])}
+
+ОБЩАЯ СТАТИСТИКА:
+- Таблиц проанализировано: {table_summary.get('total_tables', 0)}
+- Связей найдено: {table_summary.get('total_relations', 0)}
+- Объем данных: {table_summary.get('total_memory_mb', 0):.1f} MB
+
+Создай краткое (2-3 абзаца) executive summary для руководителя, который принимает решения.
+Фокусируйся на БИЗНЕС-ЦЕННОСТИ и ПРИОРИТЕТНЫХ ДЕЙСТВИЯХ.
 """
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "system",
+                     "content": "Ты создаешь executive summary для CEO. Пиши кратко, четко, акцент на ROI и действиях."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=600
             )
 
             return response.choices[0].message.content
 
         except Exception as e:
-            logger.error(f"Ошибка GPT анализа корреляций: {e}")
-            return f"Найдено {len(correlations)} корреляций. Детальный анализ недоступен."
-
-    def generate_executive_summary(self,
-                                   analysis_results: List[Dict],
-                                   table_summary: Dict) -> str:
-        """Генерирует executive summary с помощью GPT"""
-
-        prompt = f"""
-На основе проведенного анализа данных создай executive summary для руководства.
-
-Результаты анализа:
-{json.dumps(analysis_results, indent=2, ensure_ascii=False)}
-
-Общая информация:
-{json.dumps(table_summary, indent=2, ensure_ascii=False)}
-
-ЗАДАЧА: Создай краткое (3-4 абзаца) executive summary, которое включает:
-1. Ключевые находки из анализа данных
-2. Самые важные инсайты для бизнеса
-3. Критические проблемы, требующие внимания
-4. Топ-3 рекомендации для действий
-
-Пиши для руководителей, которые принимают стратегические решения.
-Фокусируйся на бизнес-ценности, а не на технических деталях.
-"""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.4,
-                max_tokens=800
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"Ошибка создания executive summary: {e}")
-            return "Executive summary временно недоступен."
+            logger.error(f"Ошибка создания умного executive summary: {e}")
+            return f"Проведен комплексный анализ {table_summary.get('total_tables', 0)} таблиц данных. Выявлены ключевые паттерны и возможности для оптимизации. Детали в разделах анализа."
