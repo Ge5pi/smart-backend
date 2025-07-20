@@ -1,493 +1,306 @@
-# tasks.py
-import json
-
-import numpy as np
-import pandas as pd
+# tasks.py - полная замена на DataFrame-подход
+import logging
 from celery.exceptions import Ignore
 from sqlalchemy import create_engine
 import crud
 import database
-from services.report_agents import (
-    EnhancedOrchestrator,
-    EnhancedSQLCoder,
-    EnhancedCritic,
-    MLPatternDetector,
-    DomainAnalyzer,
-    AdaptiveFeedbackSystem,
-    AdvancedValidator,
-    IntelligentPrioritizer,
-    run_enhanced_analysis,
-    get_database_health_check,
-    safe_json_serialize
-)
+from services.dataframe_manager import DataFrameManager
+from services.dataframe_analyzer import DataFrameAnalyzer
 from celery_worker import celery_app
-import logging
 
-# Настройка логирования для задач
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(bind=True, time_limit=7200, name='tasks.generate_enhanced_report')
-def generate_enhanced_report(self, connection_id: int, user_id: int, report_id: int,
-                             max_questions: int = 15, enable_feedback: bool = True):
+@celery_app.task(bind=True, time_limit=7200, name='tasks.generate_dataframe_report')
+def generate_dataframe_report(self, connection_id: int, user_id: int, report_id: int, max_questions: int = 15):
     """
-    Улучшенная Celery-задача для запуска продвинутого анализа с ML и адаптивностью.
-
-    Args:
-        connection_id: ID подключения к БД
-        user_id: ID пользователя
-        report_id: ID отчета
-        max_questions: Максимальное количество вопросов для анализа
-        enable_feedback: Включить систему обратной связи
+    Генерация отчета полностью на основе DataFrame без SQL
     """
-
     db_session = next(database.get_db())
 
     try:
-        logger.info(f"[ENHANCED TASK START] Report ID: {report_id}, User ID: {user_id}")
+        logger.info(f"[DATAFRAME REPORT] Запуск для пользователя {user_id}")
 
-        # === ЭТАП 1: ИНИЦИАЛИЗАЦИЯ ===
+        # === ИНИЦИАЛИЗАЦИЯ ===
         self.update_state(
             state='INITIALIZING',
-            meta={'progress': 'Инициализация улучшенной системы анализа...', 'stage': 'setup'}
+            meta={'progress': 'Инициализация DataFrame системы...'}
         )
 
-        # Получаем строку подключения
         connection_string = crud.get_decrypted_connection_string(db_session, connection_id, user_id)
         if not connection_string:
-            crud.update_report(db_session, report_id, "FAILED", {
-                "error": "Подключение к БД не найдено.",
-                "stage": "initialization"
-            })
-            raise Ignore()
+            raise ValueError("Подключение не найдено")
 
-        logger.info("[ENHANCED TASK] Connection string retrieved successfully")
-
-        # Создаем подключение к БД
+        # Создаем подключение только для загрузки данных
         engine = create_engine(connection_string, connect_args={'connect_timeout': 30})
 
-        # === ЭТАП 2: ПРОВЕРКА ЗДОРОВЬЯ БД ===
+        # === ЗАГРУЗКА ДАННЫХ В DATAFRAME ===
         self.update_state(
-            state='HEALTH_CHECK',
-            meta={'progress': 'Проверка состояния базы данных...', 'stage': 'health_check'}
+            state='LOADING_DATA',
+            meta={'progress': 'Загрузка всех таблиц в память...'}
         )
 
-        health_check = get_database_health_check(engine)
+        df_manager = DataFrameManager(engine)
+        tables_loaded = df_manager.load_all_tables()
 
-        if not health_check["connection"]:
-            crud.update_report(db_session, report_id, "FAILED", {
-                "error": "Не удалось подключиться к базе данных",
-                "health_check": health_check,
-                "stage": "health_check"
-            })
-            raise Ignore()
+        if not tables_loaded:
+            raise ValueError("Не удалось загрузить данные из базы")
 
-        if not health_check["has_data"]:
-            crud.update_report(db_session, report_id, "FAILED", {
-                "error": "База данных не содержит данных",
-                "health_check": health_check,
-                "stage": "health_check"
-            })
-            raise Ignore()
+        logger.info(f"[DATAFRAME REPORT] Загружено {len(tables_loaded)} таблиц")
 
-        logger.info(f"[ENHANCED TASK] Database health check passed. Total rows: {health_check['total_rows']}")
+        # === СОЗДАНИЕ АНАЛИЗАТОРА ===
+        analyzer = DataFrameAnalyzer(df_manager)
 
-        # === ЭТАП 3: ИНИЦИАЛИЗАЦИЯ КОМПОНЕНТОВ ===
-        self.update_state(
-            state='COMPONENT_INIT',
-            meta={'progress': 'Инициализация ML-компонентов...', 'stage': 'component_init'}
-        )
-
-        # Инициализируем улучшенные компоненты
-        orchestrator = EnhancedOrchestrator(engine)
-        sql_coder = EnhancedSQLCoder(engine)
-        critic = EnhancedCritic(orchestrator.ml_detector)
-
-        logger.info("[ENHANCED TASK] All enhanced components initialized")
-
-        # === ЭТАП 4: СОЗДАНИЕ ИНТЕЛЛЕКТУАЛЬНОГО ПЛАНА ===
+        # === СОЗДАНИЕ ПЛАНА АНАЛИЗА ===
         self.update_state(
             state='PLANNING',
-            meta={'progress': 'Создание интеллектуального плана анализа...', 'stage': 'planning'}
+            meta={'progress': 'Создание плана анализа на основе DataFrame...'}
         )
 
-        # Создаем интеллектуальный план с ML и контекстным пониманием
-        analysis_plan = orchestrator.create_intelligent_plan()
+        analysis_plan = _create_dataframe_analysis_plan(df_manager, max_questions)
 
-        logger.info(f"[ENHANCED TASK] Intelligent plan created with {len(analysis_plan)} questions")
-
-        # Получаем информацию о домене
-        schema = orchestrator.get_comprehensive_schema()
-        populated_tables = {k: v for k, v in schema.items() if v.get('row_count', 0) > 0}
-        domain_context = orchestrator.domain_analyzer.detect_domain(
-            list(populated_tables.keys()), schema
-        )
-
-        logger.info(f"[ENHANCED TASK] Domain detected: {domain_context.domain_type} "
-                    f"(confidence: {domain_context.confidence:.2f})")
-
-        # === ЭТАП 5: ВЫПОЛНЕНИЕ АНАЛИЗА ===
+        # === ВЫПОЛНЕНИЕ АНАЛИЗА ===
         session_memory = []
-        questions_processed = 0
-        ml_insights_collected = []
 
-        for question in analysis_plan:
-            if questions_processed >= max_questions:
+        for i, question in enumerate(analysis_plan):
+            if i >= max_questions:
                 break
 
-            questions_processed += 1
-            progress_percentage = (questions_processed / min(max_questions, len(analysis_plan))) * 100
+            progress = (i + 1) / min(len(analysis_plan), max_questions) * 100
 
             self.update_state(
                 state='ANALYZING',
                 meta={
-                    'progress': f"Анализ {questions_processed}/{max_questions}: {question[:50]}...",
-                    'stage': 'analysis',
+                    'progress': f'Анализ {i + 1}/{min(len(analysis_plan), max_questions)}: {question}',
+                    'progress_percentage': progress
+                }
+            )
+
+            logger.info(f"[DATAFRAME REPORT] Анализ: {question}")
+
+            # Выполняем анализ без SQL
+            result = analyzer.analyze_question(question)
+
+            if not result.get('error'):
+                # Готовим данные для сохранения
+                data_preview = result.get('data', None)
+                if data_preview is not None and hasattr(data_preview, 'head'):
+                    data_preview = data_preview.head(10).to_dict('records')
+                elif data_preview is None:
+                    data_preview = []
+
+                session_memory.append({
                     'question': question,
-                    'progress_percentage': progress_percentage
-                }
-            )
-
-            logger.info(f"[ENHANCED TASK] Processing question {questions_processed}/{max_questions}: {question}")
-
-            # SQL Coder с валидацией
-            execution_result = sql_coder.run_with_validation(question)
-
-            # Critic с ML-анализом
-            evaluation = critic.evaluate_with_ml(execution_result)
-
-            # Логируем результаты
-            logger.info(f"[ENHANCED TASK] Question processed. Success: {evaluation.get('is_success')}")
-
-            if evaluation.get('finding'):
-                finding = evaluation['finding']
-                session_memory.append(finding)
-
-                # Собираем ML-инсайты
-                ml_patterns = finding.get('ml_patterns', [])
-                if ml_patterns:
-                    ml_insights_collected.extend(ml_patterns)
-
-                # Симулируем пользовательскую обратную связь (в реальном приложении можно получать от UI)
-                if enable_feedback:
-                    simulated_rating = 4 if evaluation.get('is_success') else 2
-                    orchestrator.process_evaluation_with_feedback(
-                        evaluation, session_memory, analysis_plan, question, simulated_rating
-                    )
-                else:
-                    orchestrator.process_evaluation_with_feedback(
-                        evaluation, session_memory, analysis_plan, question
-                    )
-
-            # Периодически обновляем состояние с промежуточными результатами
-            if questions_processed % 3 == 0:
-                diversity_report = orchestrator.get_analysis_diversity_report(session_memory)
-                self.update_state(
-                    state='ANALYZING',
-                    meta={
-                        'progress': f"Завершено {questions_processed} вопросов. "
-                                    f"Покрытие таблиц: {diversity_report['coverage_percentage']:.1f}%",
-                        'stage': 'analysis',
-                        'diversity_report': diversity_report,
-                        'progress_percentage': progress_percentage
+                    'summary': result.get('summary', ''),
+                    'data_preview': data_preview,
+                    'chart_data': result.get('chart_data'),
+                    'analyzed_tables': result.get('analyzed_tables', []),
+                    'method': 'dataframe',
+                    'additional_info': {
+                        'basic_info': result.get('basic_info'),
+                        'numeric_stats': result.get('numeric_stats'),
+                        'categorical_stats': result.get('categorical_stats'),
+                        'correlations': result.get('correlations'),
+                        'anomalies': result.get('anomalies')
                     }
-                )
+                })
+            else:
+                logger.error(f"Ошибка анализа вопроса: {result['error']}")
+                session_memory.append({
+                    'question': question,
+                    'summary': f'Ошибка анализа: {result["error"]}',
+                    'data_preview': [],
+                    'error': result['error'],
+                    'method': 'dataframe'
+                })
 
-        # === ЭТАП 6: СОЗДАНИЕ ФИНАЛЬНОГО ОТЧЕТА ===
+        # === СОЗДАНИЕ ФИНАЛЬНОГО ОТЧЕТА ===
         self.update_state(
-            state='SYNTHESIZING',
-            meta={'progress': 'Создание комплексного отчета...', 'stage': 'synthesis'}
+            state='FINALIZING',
+            meta={'progress': 'Создание финального отчета...'}
         )
 
-        logger.info(f"[ENHANCED TASK] Creating final report with {len(session_memory)} findings")
+        # Получаем сводку по таблицам
+        table_summary = df_manager.get_table_summary()
 
-        if not session_memory:
-            final_report = {
-                "executive_summary": "Анализ не дал результатов. База данных может быть пустой или недоступной.",
-                "detailed_findings": [],
-                "health_check": health_check,
-                "domain_context": {
-                    "domain_type": domain_context.domain_type,
-                    "confidence": domain_context.confidence
-                },
-                "analysis_stats": {
-                    "questions_processed": questions_processed,
-                    "ml_patterns_found": 0,
-                    "tables_analyzed": 0
-                }
-            }
-        else:
-            # Создаем комплексный отчет с ML-инсайтами
-            final_report = create_comprehensive_report(
-                session_memory,
-                orchestrator,
-                health_check,
-                domain_context,
-                questions_processed,
-                ml_insights_collected,
-                enable_feedback
-            )
-
-        # === ЭТАП 7: СОХРАНЕНИЕ РЕЗУЛЬТАТОВ ===
-        self.update_state(
-            state='SAVING',
-            meta={'progress': 'Сохранение отчета...', 'stage': 'saving'}
-        )
-
-        try:
-            # Безопасная сериализация отчета
-            safe_report = safe_json_serialize(final_report)
-            crud.update_report(db_session, report_id, "COMPLETED", safe_report)
-            logger.info("[ENHANCED TASK] Report saved successfully")
-        except Exception as save_error:
-            logger.error(f"Ошибка сохранения отчета: {save_error}")
-            # Сохраняем упрощенную версию отчета
-            simplified_report = {
-                "executive_summary": final_report.get("executive_summary", ""),
-                "error": "Ошибка сериализации полного отчета",
-                "summary": str(final_report)
-            }
-            crud.update_report(db_session, report_id, "COMPLETED", simplified_report)
-
-
-    except Exception as e:
-        logger.error(f"[ENHANCED TASK ERROR] {e}", exc_info=True)
-
-        # Determine the stage where the error occurred from the task's last known state
-        current_stage = 'unknown'
-        if self.request.info and isinstance(self.request.info, dict):
-            current_stage = self.request.info.get('stage', 'unknown')
-
-        error_report = {
-            "error": "Произошла критическая ошибка в улучшенной задаче анализа",
-            "details": str(e),
-            "stage": current_stage,
-            "type": type(e).__name__,
+        final_report = {
+            "executive_summary": _create_executive_summary(session_memory, table_summary),
+            "detailed_findings": session_memory,
+            "method": "pure_dataframe",
+            "tables_info": table_summary['tables'],
+            "relations_info": table_summary['relations'],
+            "analysis_stats": {
+                "questions_processed": len(session_memory),
+                "successful_analyses": len([f for f in session_memory if not f.get('error')]),
+                "tables_analyzed": table_summary['total_tables'],
+                "relations_found": table_summary['total_relations'],
+                "total_memory_mb": round(table_summary['total_memory_mb'], 2)
+            },
+            "recommendations": _generate_recommendations(session_memory, table_summary)
         }
 
-        # Обновляем отчет ПЕРЕД обновлением состояния задачи
-        try:
-            crud.update_report(db_session, report_id, "FAILED", error_report)
-        except Exception as update_error:
-            logger.error(f"Ошибка обновления отчета: {update_error}")
+        crud.update_report(db_session, report_id, "COMPLETED", final_report)
+        logger.info(f"[DATAFRAME REPORT] Отчет {report_id} успешно создан")
 
-        # Обновляем состояние задачи с правильной структурой
-        try:
-            self.update_state(
-                state='FAILURE',
-                meta={
-                    'progress': 'Ошибка выполнения',
-                    'error': str(e),
-                    'error_type': type(e).__name__,
-                    'stage': 'error'
-                }
-            )
-        except Exception as state_error:
-            logger.error(f"Ошибка обновления состояния: {state_error}")
-
-        raise Ignore()
+    except Exception as e:
+        logger.error(f"[DATAFRAME REPORT ERROR] {e}", exc_info=True)
+        error_report = {
+            "error": str(e),
+            "method": "dataframe",
+            "stage": "error"
+        }
+        crud.update_report(db_session, report_id, "FAILED", error_report)
 
     finally:
         db_session.close()
 
 
-def create_comprehensive_report(session_memory, orchestrator, health_check,
-                                domain_context, questions_processed, ml_insights,
-                                enable_feedback):
-    """
-    Создает комплексный отчет с ML-инсайтами и адаптивной аналитикой.
-    """
+def _create_dataframe_analysis_plan(df_manager: DataFrameManager, max_questions: int) -> list:
+    """Создает план анализа на основе загруженных DataFrame"""
 
-    # Получаем ML-инсайты от оркестратора
-    ml_summary = orchestrator.get_ml_insights_summary()
+    plan = [
+        "Общий обзор структуры данных и связей между таблицами"
+    ]
 
-    # Получаем отчет о разнообразии анализа
-    diversity_report = orchestrator.get_analysis_diversity_report(session_memory)
+    # Добавляем анализ каждой таблицы (ограничиваем количество)
+    table_names = list(df_manager.tables.keys())
+    for table_name in table_names[:min(5, len(table_names))]:
+        plan.append(f"Детальный анализ таблицы '{table_name}' с поиском паттернов и аномалий")
 
-    # Создаем executive summary
-    executive_summary = generate_executive_summary(
-        session_memory, ml_summary, domain_context, questions_processed
-    )
+    # Анализ связей если они есть
+    if df_manager.relations:
+        plan.append("Анализ качества связей между таблицами и их целостности")
 
-    # Формируем детальные результаты
-    detailed_findings = []
+    # Специфические анализы
+    plan.extend([
+        "Агрегированная статистика по ключевым метрикам всех таблиц",
+        "Анализ корреляций между числовыми переменными",
+        "Поиск аномалий и выбросов в данных",
+        "Временной анализ и поиск трендов в данных",
+        "Анализ распределения категориальных переменных",
+        "Сравнительный анализ таблиц по основным характеристикам"
+    ])
+
+    # Если таблиц много, добавляем дополнительные вопросы
+    if len(table_names) > 5:
+        for table_name in table_names[5:8]:  # Еще несколько таблиц
+            plan.append(f"Экспресс-анализ таблицы '{table_name}'")
+
+    return plan[:max_questions]
+
+
+def _create_executive_summary(session_memory: list, table_summary: dict) -> str:
+    """Создает executive summary"""
+    successful_analyses = len([f for f in session_memory if not f.get('error')])
+    total_questions = len(session_memory)
+    total_tables = table_summary['total_tables']
+    total_relations = table_summary['total_relations']
+    total_memory = table_summary['total_memory_mb']
+
+    # Подсчитываем проанализированные таблицы
+    analyzed_tables = set()
     for finding in session_memory:
-        # Обогащаем каждый результат дополнительной информацией
-        enhanced_finding = finding.copy()
-        enhanced_finding['timestamp'] = finding.get('timestamp', 'N/A')
-        enhanced_finding['confidence_score'] = calculate_confidence_score(finding)
-        detailed_findings.append(enhanced_finding)
+        analyzed_tables.update(finding.get('analyzed_tables', []))
 
-    # Создаем рекомендации
-    recommendations = generate_smart_recommendations(
-        session_memory, ml_summary, domain_context, diversity_report
-    )
+    summary = (f"Проведен полный DataFrame-анализ базы данных. "
+               f"Обработано {successful_analyses} из {total_questions} аналитических вопросов. "
+               f"Загружено {total_tables} таблиц ({total_memory:.1f} MB) с {total_relations} связями. "
+               f"Проанализировано {len(analyzed_tables)} уникальных таблиц.")
 
-    # Формируем финальный отчет
-    final_report = {
-        "executive_summary": executive_summary,
-        "detailed_findings": detailed_findings,
-        "recommendations": recommendations,
-        "health_check": health_check,
-        "domain_context": {
-            "domain_type": domain_context.domain_type,
-            "confidence": domain_context.confidence,
-            "key_entities": domain_context.key_entities,
-            "business_metrics": domain_context.business_metrics
-        },
-        "ml_insights": ml_summary,
-        "analysis_stats": {
-            "questions_processed": questions_processed,
-            "successful_findings": len([f for f in session_memory if f.get('data_preview')]),
-            "ml_patterns_found": len(ml_insights),
-            "tables_coverage": diversity_report['coverage_percentage'],
-            "tables_analyzed": diversity_report['analyzed_tables']
-        },
-        "diversity_report": diversity_report
-    }
+    # Добавляем информацию о найденных инсайтах
+    findings_with_anomalies = len([f for f in session_memory
+                                   if f.get('additional_info', {}).get('anomalies')])
+    findings_with_correlations = len([f for f in session_memory
+                                      if f.get('additional_info', {}).get('correlations')])
 
-    # Добавляем адаптивную стратегию если обратная связь включена
-    if enable_feedback:
-        final_report["adaptive_strategy"] = orchestrator.feedback_system.adapt_analysis_strategy()
+    if findings_with_anomalies > 0:
+        summary += f" Обнаружены аномалии в {findings_with_anomalies} анализах."
 
-    return final_report
-
-
-def generate_executive_summary(session_memory, ml_summary, domain_context, questions_processed):
-    """Генерирует executive summary с учетом ML-инсайтов."""
-
-    successful_findings = len([f for f in session_memory if f.get('data_preview')])
-    charts_created = len([f for f in session_memory if f.get('chart_url')])
-
-    summary = f"Проведен интеллектуальный анализ {questions_processed} вопросов с использованием машинного обучения. "
-    summary += f"Получено {successful_findings} успешных результатов, создано {charts_created} визуализаций. "
-
-    if domain_context.domain_type != 'general':
-        summary += f"Определена предметная область: {domain_context.domain_type} "
-        summary += f"(уверенность: {domain_context.confidence:.1%}). "
-
-    if ml_summary.get('total_patterns', 0) > 0:
-        summary += f"Обнаружено {ml_summary['total_patterns']} паттернов с помощью ML-алгоритмов. "
+    if findings_with_correlations > 0:
+        summary += f" Найдены корреляции в {findings_with_correlations} анализах."
 
     return summary
 
 
-def calculate_confidence_score(finding):
-    """Вычисляет оценку уверенности для результата."""
-    score = 0.5  # Базовая оценка
-
-    # Увеличиваем за наличие данных
-    data_preview = finding.get('data_preview')
-    if data_preview:
-        score += 0.2
-        if isinstance(data_preview, list) and len(data_preview) > 10:
-            score += 0.1
-
-    # Увеличиваем за наличие визуализации
-    if finding.get('chart_url'):
-        score += 0.1
-
-    # Увеличиваем за ML-паттерны
-    ml_patterns = finding.get('ml_patterns')
-    if ml_patterns:
-        high_conf_patterns = [p for p in ml_patterns if p.get('confidence', 0) > 0.7]
-        if high_conf_patterns:
-            score += 0.1
-
-    # Увеличиваем за успешную валидацию
-    if finding.get('validation', {}).get('is_valid'):
-        score += 0.1
-
-    return min(score, 1.0)
-
-
-def generate_smart_recommendations(session_memory, ml_summary, domain_context, diversity_report):
-    """Генерирует умные рекомендации на основе результатов анализа."""
-
+def _generate_recommendations(session_memory: list, table_summary: dict) -> list:
+    """Генерирует рекомендации на основе анализа"""
     recommendations = []
 
-    # Рекомендации на основе покрытия таблиц
-    if diversity_report['coverage_percentage'] < 70:
+    # Рекомендации по качеству данных
+    total_tables = len(table_summary['tables'])
+    empty_tables = len([t for t, info in table_summary['tables'].items() if info['rows'] == 0])
+
+    if empty_tables > 0:
         recommendations.append(
-            f"Рекомендуется провести дополнительный анализ недоисследованных таблиц: "
-            f"{', '.join(diversity_report['underanalyzed_tables'][:3])}"
-        )
+            f"Обнаружено {empty_tables} пустых таблиц из {total_tables}. Рекомендуется проверить процессы загрузки данных.")
 
-    # Рекомендации на основе ML-паттернов
-    if ml_summary.get('total_patterns', 0) > 0:
-        pattern_types = list(ml_summary.get('pattern_types', {}).keys())
-        if 'anomaly' in pattern_types:
-            recommendations.append("Внедрить систему мониторинга для автоматического обнаружения аномалий")
-        if 'clustering' in pattern_types:
-            recommendations.append("Провести бизнес-интерпретацию обнаруженных кластеров")
-        if 'correlation' in pattern_types:
-            recommendations.append("Исследовать причинно-следственные связи в обнаруженных корреляциях")
+    # Рекомендации по аномалиям
+    findings_with_anomalies = [f for f in session_memory
+                               if f.get('additional_info', {}).get('anomalies')]
+    if findings_with_anomalies:
+        recommendations.append("Найдены аномалии в данных. Рекомендуется настроить мониторинг качества данных.")
 
-    # Рекомендации на основе предметной области
-    if domain_context.domain_type == 'ecommerce':
-        recommendations.extend([
-            "Создать дашборд для мониторинга ключевых метрик продаж",
-            "Внедрить систему сегментации клиентов"
-        ])
-    elif domain_context.domain_type == 'crm':
-        recommendations.extend([
-            "Оптимизировать воронку продаж на основе выявленных паттернов",
-            "Автоматизировать скоринг лидов"
-        ])
-    elif domain_context.domain_type == 'analytics':
-        recommendations.extend([
-            "Настроить A/B тестирование для оптимизации конверсий",
-            "Создать когортный анализ пользователей"
-        ])
+    # Рекомендации по связям
+    if table_summary['total_relations'] > 0:
+        recommendations.append(
+            "Обнаружены связи между таблицами. Рекомендуется использовать их для создания комплексных отчетов.")
+    else:
+        recommendations.append("Связи между таблицами не обнаружены. Рекомендуется проверить настройку внешних ключей.")
+
+    # Рекомендации по производительности
+    if table_summary['total_memory_mb'] > 1000:  # Больше 1 GB
+        recommendations.append(
+            "Большой объем данных в памяти. Рекомендуется рассмотреть оптимизацию загрузки или использование sampling.")
+
+    # Рекомендации по визуализации
+    findings_with_charts = len([f for f in session_memory if f.get('chart_data')])
+    if findings_with_charts > 0:
+        recommendations.append(
+            f"Создано {findings_with_charts} визуализаций. Рекомендуется настроить дашборд для регулярного мониторинга.")
 
     # Общие рекомендации
     recommendations.extend([
-        "Автоматизировать регулярное обновление анализа",
-        "Создать систему уведомлений о важных изменениях в данных"
+        "Автоматизировать регулярное обновление DataFrame-анализа",
+        "Создать систему уведомлений о важных изменениях в данных",
+        "Настроить мониторинг качества данных на основе найденных паттернов"
     ])
 
-    return recommendations[:8]  # Ограничиваем количество рекомендаций
+    return recommendations[:8]  # Ограничиваем количество
+
+
+# Дополнительные задачи для разных типов анализа
+
+@celery_app.task(bind=True, time_limit=3600, name='tasks.quick_dataframe_analysis')
+def quick_dataframe_analysis(self, connection_id: int, user_id: int, report_id: int):
+    """Быстрый DataFrame анализ (меньше вопросов, быстрее)"""
+    return generate_dataframe_report.apply(
+        args=[connection_id, user_id, report_id],
+        kwargs={'max_questions': 8}
+    )
+
+
+@celery_app.task(bind=True, time_limit=9000, name='tasks.comprehensive_dataframe_analysis')
+def comprehensive_dataframe_analysis(self, connection_id: int, user_id: int, report_id: int):
+    """Комплексный DataFrame анализ (максимальное количество вопросов)"""
+    return generate_dataframe_report.apply(
+        args=[connection_id, user_id, report_id],
+        kwargs={'max_questions': 25}
+    )
+
+
+# Оставляем старые функции для обратной совместимости
+@celery_app.task(bind=True, time_limit=3600, name='tasks.generate_advanced_report')
+def generate_advanced_report(self, connection_id: int, user_id: int, report_id: int):
+    """Legacy функция - перенаправляет на DataFrame анализ"""
+    logger.warning("Используется legacy функция generate_advanced_report, перенаправляем на DataFrame анализ")
+    return generate_dataframe_report.apply_async(
+        args=[connection_id, user_id, report_id],
+        kwargs={'max_questions': 12}
+    )
 
 
 @celery_app.task(bind=True, time_limit=1800, name='tasks.quick_ml_analysis')
 def quick_ml_analysis(self, connection_id: int, user_id: int, report_id: int):
-    """
-    Быстрый ML-анализ для оперативного обнаружения паттернов.
-    """
-
-    db_session = next(database.get_db())
-
-    try:
-        self.update_state(state='INITIALIZING', meta={'progress': 'Инициализация быстрого ML-анализа...'})
-
-        connection_string = crud.get_decrypted_connection_string(db_session, connection_id, user_id)
-        if not connection_string:
-            raise Ignore()
-
-        engine = create_engine(connection_string, connect_args={'connect_timeout': 20})
-
-        # Используем функцию быстрого анализа
-        result = run_enhanced_analysis(engine, max_questions=8, enable_feedback=False)
-
-        crud.update_report(db_session, report_id, "COMPLETED", result)
-
-        self.update_state(state='SUCCESS', meta={'progress': 'Быстрый анализ завершен!'})
-
-    except Exception as e:
-        logger.error(f"[QUICK ML ANALYSIS ERROR] {e}")
-        crud.update_report(db_session, report_id, "FAILED", {"error": str(e)})
-        raise e
-    finally:
-        db_session.close()
-
-
-# Обратная совместимость со старой функцией
-@celery_app.task(bind=True, time_limit=3600, name='tasks.generate_advanced_report')
-def generate_advanced_report(self, connection_id: int, user_id: int, report_id: int):
-    """
-    Обратная совместимость: перенаправляет на новую улучшенную функцию.
-    """
-    return generate_enhanced_report.apply_async(
-        args=[connection_id, user_id, report_id],
-        kwargs={'max_questions': 12, 'enable_feedback': True}
-    )
+    """Legacy функция - перенаправляет на быстрый DataFrame анализ"""
+    logger.warning("Используется legacy функция quick_ml_analysis, перенаправляем на DataFrame анализ")
+    return quick_dataframe_analysis.apply_async(args=[connection_id, user_id, report_id])
