@@ -9,7 +9,7 @@ import crud
 import database
 from services.dataframe_manager import DataFrameManager
 from services.dataframe_analyzer import DataFrameAnalyzer
-from services.smart_gpt_analyzer import SmartGPTAnalyzer  # Обновленный импорт
+from services.gpt_analyzer import SmartGPTAnalyzer
 from utils.json_serializer import convert_to_serializable
 from celery_worker import celery_app
 from datetime import datetime, timedelta
