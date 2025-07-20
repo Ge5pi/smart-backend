@@ -1,14 +1,17 @@
 # tasks.py - полная DataFrame система
 import logging
+from typing import List
+
+import numpy as np
 from celery.exceptions import Ignore
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import crud
 import database
 from services.dataframe_manager import DataFrameManager
 from services.dataframe_analyzer import DataFrameAnalyzer
 from utils.json_serializer import convert_to_serializable
 from celery_worker import celery_app
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import sys
 import os
