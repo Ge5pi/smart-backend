@@ -108,13 +108,20 @@ def get_report_by_id(db: Session, report_id: int, user_id: int) -> models.Report
 
 
 def update_report(db: Session, report_id: int, status: str, results: dict):
-    db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
-    if db_report:
-        db_report.status = status
-        db_report.results = results
-        db.commit()
-        db.refresh(db_report)
-    return db_report
+    try:
+        from utils.json_serializer import convert_to_serializable
+        safe_results = convert_to_serializable(results)
+        report = db.query(models.Report).filter(models.Report.id == report_id).first()
+        if report:
+            report.status = status
+            report.results = safe_results
+            db.commit()
+            return report
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка обновления отчета {report_id}: {e}")
+        db.rollback()
+        raise
 
 
 def get_user_reports(
