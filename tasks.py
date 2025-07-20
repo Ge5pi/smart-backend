@@ -245,7 +245,7 @@ def generate_dataframe_report(self, connection_id: int, user_id: int, report_id:
         try:
             if successful_analyses > 0 and gpt_insights_count > 0:
                 # Генерируем умное executive summary
-                executive_summary = smart_gpt.generate_executive_summary_smart(
+                executive_summary = smart_gpt.generate_executive_summary(
                     smartgpt_findings, table_summary
                 )
             else:
