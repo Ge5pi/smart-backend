@@ -13,9 +13,19 @@ def convert_to_serializable(obj: Any) -> Any:
     """Конвертирует pandas/numpy объекты в JSON-serializable формат"""
 
     try:
-        if obj is None or pd.isna(obj):
+        # ИСПРАВЛЕНИЕ: проверяем None в первую очередь
+        if obj is None:
             return None
-        elif isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+
+        # ИСПРАВЛЕНИЕ: проверяем pd.isna() только для pandas объектов
+        try:
+            if pd.isna(obj):
+                return None
+        except (TypeError, ValueError):
+            # pd.isna() не работает со списками и другими сложными объектами
+            pass
+
+        if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
             return str(obj)
         elif isinstance(obj, (datetime, date)):
             return obj.isoformat()
@@ -38,6 +48,7 @@ def convert_to_serializable(obj: Any) -> Any:
         elif isinstance(obj, dict):
             return {str(key): convert_to_serializable(value) for key, value in obj.items()}
         elif isinstance(obj, (list, tuple)):
+            # ИСПРАВЛЕНИЕ: безопасная обработка списков
             return [convert_to_serializable(item) for item in obj]
         elif isinstance(obj, set):
             return [convert_to_serializable(item) for item in obj]
@@ -46,10 +57,19 @@ def convert_to_serializable(obj: Any) -> Any:
         elif hasattr(obj, '__dict__'):  # Custom objects
             return convert_to_serializable(obj.__dict__)
         else:
-            return obj
+            # ИСПРАВЛЕНИЕ: проверяем, является ли объект простым типом
+            if isinstance(obj, (str, int, float, bool)):
+                return obj
+            else:
+                return str(obj)
+
     except Exception as e:
         logger.warning(f"Не удалось конвертировать объект {type(obj)}: {e}")
-        return str(obj)
+        # ИСПРАВЛЕНИЕ: безопасный fallback
+        try:
+            return str(obj)
+        except:
+            return None
 
 
 def safe_json_serialize(data: Any) -> str:
@@ -59,7 +79,6 @@ def safe_json_serialize(data: Any) -> str:
         return json.dumps(serializable_data, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Ошибка JSON сериализации: {e}")
-        # Fallback к базовой сериализации
         return json.dumps({"error": f"Serialization failed: {str(e)}"}, ensure_ascii=False)
 
 
@@ -71,7 +90,7 @@ class DataFrameJSONEncoder(json.JSONEncoder):
             return convert_to_serializable(obj)
         except Exception as e:
             logger.warning(f"JSONEncoder fallback для {type(obj)}: {e}")
-            return super().default(obj)
+            return str(obj)
 
 
 def clean_dataframe_for_json(df: pd.DataFrame) -> list:
@@ -91,7 +110,8 @@ def clean_dataframe_for_json(df: pd.DataFrame) -> list:
             elif pd.api.types.is_numeric_dtype(df_clean[col]):
                 df_clean[col] = df_clean[col].fillna(0)
 
-        return convert_to_serializable(df_clean.to_dict('records'))
+        result = df_clean.to_dict('records')
+        return convert_to_serializable(result)
 
     except Exception as e:
         logger.error(f"Ошибка очистки DataFrame: {e}")

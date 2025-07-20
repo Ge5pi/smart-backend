@@ -108,19 +108,42 @@ def get_report_by_id(db: Session, report_id: int, user_id: int) -> models.Report
 
 
 def update_report(db: Session, report_id: int, status: str, results: dict):
+    """Обновляет отчет с безопасной сериализацией"""
     try:
         from utils.json_serializer import convert_to_serializable
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Конвертируем results в serializable формат
+        logger.info(f"Конвертация результатов отчета {report_id}")
         safe_results = convert_to_serializable(results)
+
         report = db.query(models.Report).filter(models.Report.id == report_id).first()
         if report:
             report.status = status
             report.results = safe_results
+
+            # Проверяем размер результатов
+            import json
+            try:
+                json_size = len(json.dumps(safe_results, ensure_ascii=False))
+                logger.info(f"Размер результатов отчета {report_id}: {json_size} символов")
+            except Exception as size_error:
+                logger.warning(f"Не удалось определить размер результатов: {size_error}")
+
             db.commit()
+            logger.info(f"Отчет {report_id} успешно обновлен со статусом {status}")
             return report
-        return None
+        else:
+            logger.error(f"Отчет {report_id} не найден для обновления")
+            return None
+
     except Exception as e:
         logger.error(f"Ошибка обновления отчета {report_id}: {e}")
-        db.rollback()
+        try:
+            db.rollback()
+        except:
+            pass
         raise
 
 

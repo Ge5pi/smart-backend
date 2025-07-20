@@ -437,3 +437,24 @@ def preview_dataframe_tables(
     except Exception as e:
         logger.error(f"Ошибка DataFrame preview: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка получения preview: {e}")
+
+
+@router.get("/reports/debug/{report_id}")
+def debug_report(
+        report_id: int,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Отладочный эндпоинт для проверки отчета"""
+    report = crud.get_report_by_id(db, report_id, current_user.id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден")
+
+    return {
+        "id": report.id,
+        "status": report.status,
+        "created_at": report.created_at,
+        "has_results": bool(report.results),
+        "results_keys": list(report.results.keys()) if report.results else [],
+        "task_id": report.task_id
+    }
