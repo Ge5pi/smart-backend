@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 import sys
 import os
+from services.gpt_analyzer import GPTAnalyzer
 
 # Добавляем путь для импорта utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +23,7 @@ class DataFrameAnalyzer:
     def __init__(self, df_manager: DataFrameManager):
         self.df_manager = df_manager
         self.analysis_cache = {}
+        self.gpt_analyzer = GPTAnalyzer()
 
     def analyze_question(self, question: str) -> Dict[str, Any]:
         """Анализирует вопрос и возвращает результат на основе DataFrame операций"""
@@ -161,35 +163,112 @@ class DataFrameAnalyzer:
         # Корреляционный анализ
         correlations = self._analyze_correlations_single_table(df, table_name)
 
-        # Создаем сводку
-        summary_parts = [
-            f"Таблица '{table_name}' содержит {len(df)} записей и {len(df.columns)} колонок.",
-            f"Числовых колонок: {len(numeric_cols)}, категориальных: {len(df.select_dtypes(include=['object']).columns)}."
-        ]
+        logger.info(f"Запуск GPT анализа для таблицы {table_name}")
+
+        gpt_business_insights = self.gpt_analyzer.analyze_data_with_gpt(
+            df=df,
+            table_name=table_name,
+            analysis_type="business_insights"
+        )
+
+        gpt_data_quality = self.gpt_analyzer.analyze_data_with_gpt(
+            df=df,
+            table_name=table_name,
+            analysis_type="data_quality"
+        )
+
+        # GPT анализ корреляций
+        correlation_insights = ""
+        if correlations:
+            correlation_insights = self.gpt_analyzer.analyze_correlations_with_context(
+                correlations, df, table_name
+            )
+
+        # Создаем обогащенную сводку
+        summary = f"🎯 **GPT-Анализ таблицы '{table_name}'**\n\n"
+        summary += f"📊 Базовая информация: {len(df):,} записей, {len(df.columns)} колонок\n\n"
 
         if anomalies:
-            summary_parts.append(f"Обнаружено {len(anomalies)} типов аномалий.")
-
+            summary += f"⚠️ Обнаружено {len(anomalies)} типов аномалий\n"
         if correlations:
-            summary_parts.append(f"Найдено {len(correlations)} значимых корреляций.")
+            summary += f"🔗 Найдено {len(correlations)} значимых корреляций\n"
 
-        if missing_analysis['total_missing'] > 0:
-            summary_parts.append(
-                f"Пропущенных значений: {missing_analysis['total_missing']} ({missing_analysis['missing_percentage']:.1f}%).")
+        summary += "\n📈 **Бизнес-инсайты:**\n" + gpt_business_insights.get('gpt_analysis', 'Недоступно')
 
         return {
             'question': f'Детальный анализ таблицы {table_name}',
-            'data': clean_dataframe_for_json(df.head(20)),
-            'summary': ' '.join(summary_parts),
+            'data': clean_dataframe_for_json(df.head(10)),
+            'summary': summary,
             'analyzed_tables': [table_name],
+            'gpt_business_insights': gpt_business_insights.get('gpt_analysis', ''),
+            'gpt_data_quality': gpt_data_quality.get('gpt_analysis', ''),
+            'correlation_insights': correlation_insights,
             'basic_info': basic_info,
-            'numeric_stats': numeric_stats,
-            'categorical_stats': categorical_stats,
             'anomalies': anomalies,
-            'correlations': correlations,
-            'missing_analysis': missing_analysis,
-            'chart_data': self._create_table_chart(df, table_name)
+            'correlations': correlations
         }
+
+    def _analyze_business_metrics(self, question: str) -> Dict[str, Any]:
+        """НОВЫЙ метод: Анализ бизнес-метрик с GPT"""
+
+        tables_mentioned = self._extract_mentioned_tables(question)
+        if not tables_mentioned:
+            tables_mentioned = [max(self.df_manager.tables.items(), key=lambda x: len(x[1]))[0]]
+
+        main_table = tables_mentioned[0]
+        df = self.df_manager.tables[main_table]
+
+        # Вычисляем основные метрики
+        metrics = self._calculate_business_metrics(df)
+
+        # GPT анализ метрик
+        gpt_analysis = self.gpt_analyzer.analyze_data_with_gpt(
+            df=df,
+            table_name=main_table,
+            analysis_type="business_insights",
+            context={"metrics": metrics, "question": question}
+        )
+
+        # Создаем результат
+        metrics_df = pd.DataFrame([metrics])
+
+        summary = f"🚀 **Бизнес-анализ таблицы '{main_table}'**\n\n"
+        summary += gpt_analysis.get('gpt_analysis', 'GPT анализ недоступен')
+
+        return {
+            'question': question,
+            'data': clean_dataframe_for_json(metrics_df),
+            'summary': summary,
+            'analyzed_tables': [main_table],
+            'gpt_insights': gpt_analysis.get('gpt_analysis', ''),
+            'business_metrics': metrics
+        }
+
+    def _calculate_business_metrics(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Вычисляет ключевые бизнес-метрики"""
+
+        metrics = {
+            'total_records': len(df),
+            'data_completeness': round((1 - df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100, 1),
+            'unique_entities': {}
+        }
+
+        # Анализ числовых колонок
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            for col in numeric_cols:
+                if 'value' in col.lower() or 'amount' in col.lower() or 'price' in col.lower():
+                    metrics[f'{col}_total'] = float(df[col].sum())
+                    metrics[f'{col}_average'] = round(float(df[col].mean()), 2)
+                    metrics[f'{col}_median'] = round(float(df[col].median()), 2)
+
+        # Анализ категориальных данных
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            if df[col].nunique() < 50:  # Ограничение для производительности
+                metrics['unique_entities'][col] = int(df[col].nunique())
+
+        return metrics
 
     def _analyze_relationships(self) -> Dict[str, Any]:
         """Анализ связей между таблицами"""
