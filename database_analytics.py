@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 from openai import OpenAI
-
+import logging
+import json
 import auth
 import config
 import crud
@@ -79,7 +80,6 @@ async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any
 async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], user_id: int, db: Session) -> int:
     analysis_results = await perform_analysis(dataframes)
 
-    # Очистка NaN для JSON
     def clean_nan(obj):
         if isinstance(obj, dict):
             return {k: clean_nan(v) for k, v in obj.items()}
@@ -93,6 +93,8 @@ async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], 
     report = models.Report(user_id=user_id, status="completed", results=cleaned_results)
     db.add(report)
     db.commit()
+    db.refresh(report) # <-- ДОБАВЛЕНО: Обновляем объект из БД, чтобы получить id
+    logging.warning(f"Создан отчет с ID: {report.id}") # <-- ДОБАВЛЕНО: Логируем ID
     return report.id
 
 
@@ -131,7 +133,7 @@ async def analyze_database(
     return {"report_id": report_id, "message": "Анализ запущен."}
 
 
-@database_router.get("/reports/{report_id}") # This path will resolve to /analytics/database/reports/{report_id}
+@database_router.get("/reports/{report_id}")
 async def get_report_details(
     report_id: int,
     db: Session = Depends(database.get_db),
@@ -140,13 +142,15 @@ async def get_report_details(
     """
     Retrieves a specific report by its ID.
     """
+    logging.warning(f"Поиск отчета с ID: {report_id} для пользователя {current_user.id}") # <-- ДОБАВЛЕНО
     report = crud.get_report_by_id(db, report_id=report_id)
+    logging.warning(f"Результат из БД: {report}") # <-- ДОБАВЛЕНО
 
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден.")
 
-    # Optional: Check if the report belongs to the current user
     if report.user_id != current_user.id:
+        logging.warning(f"Доступ запрещен для отчета {report.id}. Владелец: {report.user_id}, запрашивает: {current_user.id}") # <-- ДОБАВЛЕНО
         raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
 
     return report
