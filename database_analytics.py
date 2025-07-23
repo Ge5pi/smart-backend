@@ -22,9 +22,17 @@ database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
 
 
-def save_dataframes_to_redis(session_id: str, dataframes: Dict[str, pd.DataFrame]):
-    """Сохраняет DataFrame в Redis для временного хранения."""
-    serialized_dfs = {table: df.to_dict() for table, df in dataframes.items()}
+def save_dataframes_to_redis(session_id: str, dataframes: dict[str, pd.DataFrame]):
+    """Saves DataFrames to Redis with proper serialization."""
+    serialized_dfs = {}
+    for table, df in dataframes.items():
+        df_dict = df.to_dict(orient='records')
+        for row in df_dict:
+            for key, value in row.items():
+                if isinstance(value, pd.Timestamp):
+                    row[key] = value.isoformat()
+        serialized_dfs[table] = df_dict
+
     redis_client.setex(session_id, timedelta(hours=2), json.dumps({"dataframes": serialized_dfs}))
 
 
