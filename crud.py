@@ -70,6 +70,7 @@ def get_database_connections_by_user_id(db: Session, user_id: int):
 
 def get_report_by_id(db: Session, report_id: int):
     """Получает отчет по ID."""
+    print("Report_id", report_id)
     return db.query(models.Report).filter(models.Report.id == report_id).first()
 
 def get_reports_by_user_id(db: Session, user_id: int):

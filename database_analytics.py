@@ -140,7 +140,7 @@ async def get_report_details(
     """
     Retrieves a specific report by its ID.
     """
-    report = crud.get_report_by_id(db, report_id=report_id) # Assumes a new CRUD function
+    report = crud.get_report_by_id(db, report_id=report_id)
 
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден.")
