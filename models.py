@@ -29,18 +29,20 @@ class File(Base):
 class DatabaseConnection(Base):
     __tablename__ = "db_connections"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     connection_string = Column(String, nullable=False)
     db_type = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
     user = relationship("User", back_populates="connections")
 
 
 class Report(Base):
     __tablename__ = "reports"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
     results = Column(JSON, nullable=True)
+
     user = relationship("User", back_populates="reports")
