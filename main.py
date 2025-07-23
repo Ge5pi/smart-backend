@@ -5,7 +5,6 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
-from routers import analytics_router
 import boto3
 import numpy as np
 import openai
@@ -23,7 +22,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.impute import KNNImputer, SimpleImputer
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from tqdm import tqdm
-
+from database_analytics import database_router
 import auth
 import config
 import crud
@@ -58,7 +57,7 @@ LANG_MAP = {
 client = openai.OpenAI(api_key=api_key)
 pc = pinecone.Pinecone(api_key=pinecone_key)
 app = FastAPI(title="SODA API")
-
+app.include_router(database_router, tags=["Database Analytics"])
 
 @app.on_event("startup")
 async def startup_event():
@@ -84,6 +83,7 @@ INDEX_NAME = "soda-index"
 BATCH_SIZE = 100
 
 user_router = APIRouter()
+
 origins = [
     "https://smart-frontend-production.up.railway.app",
     "http://localhost:5173",
@@ -156,8 +156,7 @@ def read_user_files(db: Session = Depends(database.get_db),
 
 
 app.include_router(user_router, tags=["Users"])
-app.include_router(analytics_router.router)
-
+app.include_router(database_router, tags=["Database Analytics"])
 
 @app.post("/sessions/start")
 async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),

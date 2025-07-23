@@ -1,7 +1,7 @@
 # create_tables.py
 
 from database import engine, Base
-import models  # Импортируем, чтобы SQLAlchemy "увидел" ваши модели User и File
+import models
 
 print("Connecting to the database and creating tables...")
 

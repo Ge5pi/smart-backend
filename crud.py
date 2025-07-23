@@ -54,195 +54,24 @@ def get_file_by_uid(db: Session, file_uid: str) -> models.File:
     return db.query(models.File).filter(models.File.file_uid == file_uid).first()
 
 
-def create_db_connection(db: Session, user_id: int,
-                         conn_details: schemas.DatabaseConnectionCreate) -> models.DatabaseConnection:
-    encrypted_string = security_utils.encrypt_data(conn_details.connection_string)
-    db_conn = models.DatabaseConnection(
-        user_id=user_id,
-        nickname=conn_details.nickname,
-        db_type=conn_details.db_type,
-        encrypted_connection_string=encrypted_string
+def create_database_connection(db: Session, user_id: int, connection_string: str, db_type: str):
+    """Создает запись о подключении к базе данных."""
+    db_connection = models.DatabaseConnection(
+        user_id=user_id, connection_string=connection_string, db_type=db_type
     )
-    db.add(db_conn)
+    db.add(db_connection)
     db.commit()
-    db.refresh(db_conn)
-    return db_conn
+    db.refresh(db_connection)
+    return db_connection
 
-
-def get_db_connection_by_id(db: Session, connection_id: int, user_id: int) -> models.DatabaseConnection | None:
-    return db.query(models.DatabaseConnection).filter(
-        models.DatabaseConnection.id == connection_id,
-        models.DatabaseConnection.user_id == user_id
-    ).first()
-
-
-def get_db_connections_by_user(db: Session, user_id: int) -> list[models.DatabaseConnection]:
+def get_database_connections_by_user_id(db: Session, user_id: int):
+    """Получает список подключений пользователя."""
     return db.query(models.DatabaseConnection).filter(models.DatabaseConnection.user_id == user_id).all()
 
+def get_report_by_id(db: Session, report_id: int):
+    """Получает отчет по ID."""
+    return db.query(models.Report).filter(models.Report.id == report_id).first()
 
-def get_decrypted_connection_string(db: Session, connection_id: int, user_id: int) -> str | None:
-    db_conn = get_db_connection_by_id(db, connection_id, user_id)
-    if db_conn:
-        return security_utils.decrypt_data(db_conn.encrypted_connection_string)
-    return None
-
-
-def create_report(db: Session, user_id: int, connection_id: int, task_id: str = None) -> models.Report:
-    db_report = models.Report(
-        user_id=user_id,
-        connection_id=connection_id,
-        task_id=task_id,
-        status="PENDING"
-    )
-    db.add(db_report)
-    db.commit()
-    db.refresh(db_report)
-    return db_report
-
-
-def get_report_by_id(db: Session, report_id: int, user_id: int) -> models.Report | None:
-    return db.query(models.Report).filter(
-        models.Report.id == report_id,
-        models.Report.user_id == user_id
-    ).first()
-
-
-def update_report(db: Session, report_id: int, status: str, results: dict):
-    """Обновляет отчет с безопасной сериализацией"""
-    try:
-        from utils.json_serializer import convert_to_serializable
-        import logging
-        logger = logging.getLogger(__name__)
-
-        # Конвертируем results в serializable формат
-        logger.info(f"Конвертация результатов отчета {report_id}")
-        safe_results = convert_to_serializable(results)
-
-        report = db.query(models.Report).filter(models.Report.id == report_id).first()
-        if report:
-            report.status = status
-            report.results = safe_results
-
-            # Проверяем размер результатов
-            import json
-            try:
-                json_size = len(json.dumps(safe_results, ensure_ascii=False))
-                logger.info(f"Размер результатов отчета {report_id}: {json_size} символов")
-            except Exception as size_error:
-                logger.warning(f"Не удалось определить размер результатов: {size_error}")
-
-            db.commit()
-            logger.info(f"Отчет {report_id} успешно обновлен со статусом {status}")
-            return report
-        else:
-            logger.error(f"Отчет {report_id} не найден для обновления")
-            return None
-
-    except Exception as e:
-        logger.error(f"Ошибка обновления отчета {report_id}: {e}")
-        try:
-            db.rollback()
-        except:
-            pass
-        raise
-
-
-def get_user_reports(
-        db: Session,
-        user_id: int,
-        limit: int = 10,
-        offset: int = 0,
-        status_filter: Optional[str] = None
-) -> List[models.Report]:
-    """
-    Получает отчеты пользователя с пагинацией и фильтрацией по статусу.
-
-    Args:
-        db: Сессия базы данных
-        user_id: ID пользователя
-        limit: Максимальное количество отчетов
-        offset: Смещение для пагинации
-        status_filter: Фильтр по статусу (PENDING, COMPLETED, FAILED)
-
-    Returns:
-        Список отчетов пользователя
-    """
-    query = db.query(models.Report).filter(models.Report.user_id == user_id)
-
-    # Применяем фильтр по статусу если указан
-    if status_filter:
-        query = query.filter(models.Report.status == status_filter)
-
-    # Сортируем по дате создания (новые первыми)
-    query = query.order_by(desc(models.Report.created_at))
-
-    # Применяем пагинацию
-    return query.offset(offset).limit(limit).all()
-
-
-def create_report_feedback(
-        db: Session,
-        report_id: int,
-        user_id: int,
-        feedback_data: dict
-) -> models.Feedback:
-    """
-    Создает отзыв для отчета.
-
-    Args:
-        db: Сессия базы данных
-        report_id: ID отчета
-        user_id: ID пользователя
-        feedback_data: Данные обратной связи с полями:
-            - rating: int (1-5)
-            - comment: str (опционально)
-            - useful_sections: list[str] (опционально)
-
-    Returns:
-        Созданный объект Feedback
-    """
-    # Проверяем, что отчет существует и принадлежит пользователю
-    report = get_report_by_id(db, report_id, user_id)
-    if not report:
-        raise ValueError("Отчет не найден или не принадлежит пользователю")
-
-    # Проверяем, что пользователь еще не оставлял отзыв на этот отчет
-    existing_feedback = db.query(models.Feedback).filter(
-        models.Feedback.report_id == report_id,
-        models.Feedback.user_id == user_id
-    ).first()
-
-    if existing_feedback:
-        # Обновляем существующий отзыв
-        existing_feedback.rating = feedback_data.get("rating", existing_feedback.rating)
-        existing_feedback.comment = feedback_data.get("comment", existing_feedback.comment)
-        existing_feedback.useful_sections = feedback_data.get("useful_sections", existing_feedback.useful_sections)
-        existing_feedback.created_at = datetime.utcnow()  # Обновляем время
-        db.commit()
-        db.refresh(existing_feedback)
-        return existing_feedback
-
-    # Создаем новый отзыв
-    db_feedback = models.Feedback(
-        report_id=report_id,
-        user_id=user_id,
-        rating=feedback_data.get("rating"),
-        comment=feedback_data.get("comment"),
-        useful_sections=feedback_data.get("useful_sections", [])
-    )
-
-    db.add(db_feedback)
-    db.commit()
-    db.refresh(db_feedback)
-    return db_feedback
-
-
-def get_report_feedbacks(db: Session, report_id: int) -> List[models.Feedback]:
-    """Получает все отзывы для отчета."""
-    return db.query(models.Feedback).filter(models.Feedback.report_id == report_id).all()
-
-
-def get_user_feedback(db: Session, user_id: int) -> List[models.Feedback]:
-    """Получает все отзывы пользователя."""
-    return db.query(models.Feedback).filter(models.Feedback.user_id == user_id).order_by(
-        desc(models.Feedback.created_at)).all()
+def get_reports_by_user_id(db: Session, user_id: int):
+    """Получает список отчетов пользователя."""
+    return db.query(models.Report).filter(models.Report.user_id == user_id).order_by(models.Report.created_at.desc()).all()
