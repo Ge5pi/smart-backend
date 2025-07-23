@@ -1,4 +1,4 @@
-# database_analytics.py
+# database_analytics.py (обновленный)
 import json
 import uuid
 from datetime import timedelta
@@ -8,15 +8,15 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 from openai import OpenAI
-from redis import Redis
 
 import auth
-import config
+import config  # Импортируем config для redis_client и API_KEY
 import crud
 import database
 import models
-from config import API_KEY
-from main import redis_client
+
+# Используем из config
+from config import redis_client, API_KEY
 
 database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
