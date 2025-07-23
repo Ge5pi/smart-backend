@@ -29,18 +29,12 @@ import crud
 import database
 import models
 import schemas
-from config import API_KEY, PINECONE_KEY, redis_client
+from config import API_KEY, PINECONE_KEY, redis_client, s3_client
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
 
 try:
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
-        region_name=config.AWS_DEFAULT_REGION
-    )
 
     print("--- Successfully connected to Redis ---")
 
