@@ -19,7 +19,7 @@ import database
 import models
 
 # Используем из config (предполагаем S3-клиент и Redis)
-from config import redis_client, API_KEY, S3_BUCKET_NAME, s3_client 
+from config import redis_client, API_KEY, S3_BUCKET_NAME, s3_client
 
 database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
@@ -129,3 +129,24 @@ async def analyze_database(
                        json.dumps({"s3_keys": s3_keys}))  # В Redis только ключи (малый размер)
     report_id = await generate_report(session_id, dataframes, current_user.id, db)
     return {"report_id": report_id, "message": "Анализ запущен."}
+
+
+@database_router.get("/reports/{report_id}") # This path will resolve to /analytics/database/reports/{report_id}
+async def get_report_details(
+    report_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """
+    Retrieves a specific report by its ID.
+    """
+    report = crud.get_report_by_id(db, report_id=report_id) # Assumes a new CRUD function
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден.")
+
+    # Optional: Check if the report belongs to the current user
+    if report.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
+
+    return report
