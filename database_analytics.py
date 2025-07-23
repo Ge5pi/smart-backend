@@ -1,16 +1,17 @@
-# database_analytics.py (обновленный)
+# database_analytics.py
 import json
 import uuid
 from datetime import timedelta
 from typing import Dict, Any
 import pandas as pd
+import numpy as np
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 from openai import OpenAI
 
 import auth
-import config  # Импортируем config для redis_client и API_KEY
+import config
 import crud
 import database
 import models
@@ -22,8 +23,8 @@ database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
 
 
-def save_dataframes_to_redis(session_id: str, dataframes: dict[str, pd.DataFrame]):
-    """Saves DataFrames to Redis with proper serialization."""
+def save_dataframes_to_redis(session_id: str, dataframes: Dict[str, pd.DataFrame]):
+    """Сохраняет DataFrame в Redis для временного хранения."""
     serialized_dfs = {}
     for table, df in dataframes.items():
         df_dict = df.to_dict(orient='records')
@@ -31,8 +32,9 @@ def save_dataframes_to_redis(session_id: str, dataframes: dict[str, pd.DataFrame
             for key, value in row.items():
                 if isinstance(value, pd.Timestamp):
                     row[key] = value.isoformat()
+                elif pd.isna(value):  # Обрабатываем NaN
+                    row[key] = None
         serialized_dfs[table] = df_dict
-
     redis_client.setex(session_id, timedelta(hours=2), json.dumps({"dataframes": serialized_dfs}))
 
 
@@ -50,10 +52,10 @@ async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any
     insights = {}
     correlations = {}
     for table, df in dataframes.items():
-        # Вычисление корреляций с помощью Pandas
-        corr = df.corr(numeric_only=True).to_dict()
+        # Вычисление корреляций с помощью Pandas, замена NaN на None
+        corr = df.corr(numeric_only=True).replace({np.nan: None}).to_dict()
         correlations[table] = corr
-        stats = df.describe().to_json()
+        stats = df.describe().replace({np.nan: None}).to_json()
         # Использование GPT для интерпретации
         prompt = (
             f"Анализируй данные таблицы '{table}'. Вот статистика: {stats}. "
@@ -72,7 +74,19 @@ async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any
 async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], user_id: int, db: Session) -> int:
     """Генерирует отчет на основе анализа и сохраняет его в базе данных."""
     analysis_results = await perform_analysis(dataframes)
-    report = models.Report(user_id=user_id, status="completed", results=analysis_results)
+
+    # Убедимся, что в результатах нет NaN перед сохранением в PostgreSQL
+    def clean_nan(obj):
+        if isinstance(obj, dict):
+            return {k: clean_nan(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [clean_nan(item) for item in obj]
+        elif isinstance(obj, float) and np.isnan(obj):
+            return None
+        return obj
+
+    cleaned_results = clean_nan(analysis_results)
+    report = models.Report(user_id=user_id, status="completed", results=cleaned_results)
     db.add(report)
     db.commit()
     return report.id
