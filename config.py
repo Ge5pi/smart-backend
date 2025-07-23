@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-
+import redis
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
@@ -28,7 +28,7 @@ PINECONE_KEY = os.getenv("PINECONE_API_KEY")
 enc = os.getenv("ENCRYPTION_KEY")
 
 ENCRYPTION_KEY = enc.encode('utf-8')
-
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=15)
 # Проверка, что ключевые переменные установлены
 if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, DATABASE_URL, SECRET_KEY, S3_BUCKET_NAME, REDIS_URL]):
     raise ValueError("Одна или несколько ключевых переменных окружения не установлены. Проверьте .env файл.")

@@ -29,7 +29,7 @@ import crud
 import database
 import models
 import schemas
-from config import API_KEY, PINECONE_KEY
+from config import API_KEY, PINECONE_KEY, redis_client
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
@@ -42,7 +42,6 @@ try:
         region_name=config.AWS_DEFAULT_REGION
     )
 
-    redis_client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=15)
     print("--- Successfully connected to Redis ---")
 
 except Exception as e:
