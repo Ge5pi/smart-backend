@@ -1,10 +1,11 @@
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Set, Tuple
 import pandas as pd
 import numpy as np
 import io
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import Inspector
 from sqlalchemy.orm import Session
 from openai import OpenAI
 import logging
@@ -14,70 +15,138 @@ import config
 import crud
 import database
 import models
-
 import schemas
-from config import redis_client, API_KEY, S3_BUCKET_NAME, s3_client
+from config import API_KEY
 
 database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
 
 
-def save_dataframes_to_s3(session_id: str, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, str]:
-    """Сохраняет DataFrames в S3 как Parquet и возвращает ключи."""
-    s3_keys = {}
+def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
+    """Анализирует отдельную таблицу и возвращает инсайты и корреляции."""
+    numeric_df = df.select_dtypes(include=np.number)
+    corr = numeric_df.corr().replace({np.nan: None}).to_dict() if not numeric_df.empty else {}
+    stats = df.describe(include='all').replace({np.nan: None}).to_json()
+
+    prompt = (
+        f"Проанализируй данные из таблицы '{table_name}'. "
+        f"Вот описательная статистика: {stats}. "
+        f"Вот матрица корреляций для числовых полей: {json.dumps(corr)}. "
+        "Твоя задача — выявить ключевые инсайты, скрытые закономерности и аномалии в данных этой таблицы. "
+        "Будь кратким, структурированным и пиши на русском языке."
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4
+    )
+    insight = response.choices[0].message.content
+    return {"insight": insight, "correlations": corr}
+
+
+def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """
+    Находит внешние ключи, объединяет таблицы и анализирует результат.
+    """
+    joint_insights = {}
+    analyzed_pairs: Set[Tuple[str, str]] = set()
+    all_tables = list(dataframes.keys())
+
+    for table_name in all_tables:
+        try:
+            foreign_keys = inspector.get_foreign_keys(table_name)
+        except Exception as e:
+            logging.warning(f"Не удалось получить внешние ключи для таблицы {table_name}: {e}")
+            continue
+
+        for fk in foreign_keys:
+            left_table = table_name
+            right_table = fk['referred_table']
+
+            # Сортируем имена таблиц, чтобы избежать дублирования (user, post) и (post, user)
+            pair = tuple(sorted((left_table, right_table)))
+            if pair in analyzed_pairs:
+                continue
+
+            analyzed_pairs.add(pair)
+
+            df_left = dataframes[left_table]
+            df_right = dataframes.get(right_table)
+
+            if df_right is None:
+                continue
+
+            left_on = fk['constrained_columns']
+            right_on = fk['referred_columns']
+
+            try:
+                # Объединяем таблицы, добавляя суффиксы, чтобы избежать конфликта имен столбцов
+                merged_df = pd.merge(
+                    df_left, df_right,
+                    left_on=left_on,
+                    right_on=right_on,
+                    suffixes=(f'_{left_table}', f'_{right_table}')
+                )
+
+                if merged_df.empty:
+                    continue
+
+                join_key = f"{left_table} 🔗 {right_table}"
+
+                # Анализируем объединенный DataFrame
+                analysis_result = analyze_single_table(join_key, merged_df)
+
+                # Корректируем промпт для GPT, чтобы он фокусировался на межтабличных связях
+                stats = merged_df.describe(include='all').replace({np.nan: None}).to_json()
+                corr = analysis_result["correlations"]
+
+                prompt = (
+                    f"Проанализируй СВЯЗЬ между таблицами '{left_table}' и '{right_table}', которые были объединены по ключам "
+                    f"({left_table}.{','.join(left_on)} = {right_table}.{','.join(right_on)}). "
+                    f"Вот статистика объединенных данных: {stats}. "
+                    f"Вот матрица корреляций: {json.dumps(corr)}. "
+                    f"Сосредоточься на поиске инсайтов, которые возникают именно из-за связи двух таблиц. "
+                    f"Например, как атрибуты из одной таблицы влияют на атрибуты в другой? "
+                    "Ответ дай на русском языке, кратко и по делу."
+                )
+
+                response = client.chat.completions.create(
+                    model="gpt-4-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.5
+                )
+
+                analysis_result["insight"] = response.choices[0].message.content
+                joint_insights[join_key] = analysis_result
+
+            except Exception as e:
+                logging.error(f"Ошибка при объединении и анализе таблиц {left_table} и {right_table}: {e}")
+
+    return joint_insights
+
+
+async def perform_full_analysis(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """Выполняет полный анализ: по каждой таблице и по их связям."""
+
+    # 1. Анализ по отдельным таблицам
+    single_table_analysis = {}
     for table, df in dataframes.items():
-        df = df.replace({np.nan: None})
-        df = df.applymap(lambda x: x.isoformat() if isinstance(x, pd.Timestamp) else x)
+        single_table_analysis[table] = analyze_single_table(table, df)
 
-        buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)
+    # 2. Анализ межтабличных связей
+    joint_table_analysis = analyze_joins(inspector, dataframes)
 
-        key = f"sessions/{session_id}/{table}.parquet"
-        s3_client.put_object(Bucket=config.S3_BUCKET_NAME, Key=key, Body=buffer, ContentType='application/octet-stream')
-        s3_keys[table] = key
-    return s3_keys
+    return {
+        "single_table_insights": single_table_analysis,
+        "joint_table_insights": joint_table_analysis
+    }
 
 
-def load_dataframes_from_s3(s3_keys: Dict[str, str]) -> Dict[str, pd.DataFrame]:
-    """Загружает DataFrames из S3."""
-    dataframes = {}
-    for table, key in s3_keys.items():
-        obj = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=key)
-        buffer = io.BytesIO(obj['Body'].read())
-        df = pd.read_parquet(buffer)
-        dataframes[table] = df
-    return dataframes
-
-
-async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    insights = {}
-    correlations = {}
-    for table, df in dataframes.items():
-        # Выбираем только числовые столбцы для корреляции
-        numeric_df = df.select_dtypes(include=np.number)
-        if not numeric_df.empty:
-            corr = numeric_df.corr().replace({np.nan: None}).to_dict()
-        else:
-            corr = {}
-        correlations[table] = corr
-        stats = df.describe(include='all').replace({np.nan: None}).to_json()
-        prompt = (
-            f"Анализируй данные таблицы '{table}'. Вот статистика: {stats}. "
-            f"Корреляции: {json.dumps(corr)}. Выяви скрытые паттерны, инсайты и корреляции. "
-            f"Ответ должен быть на русском языке, кратким и структурированным."
-        )
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
-        )
-        insights[table] = response.choices[0].message.content
-    return {"insights": insights, "correlations": correlations}
-
-
-async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], user_id: int, db: Session) -> int:
-    analysis_results = await perform_analysis(dataframes)
+async def generate_report(session_id: str, inspector: Inspector, dataframes: Dict[str, pd.DataFrame], user_id: int,
+                          db: Session) -> int:
+    # Запускаем новый, улучшенный процесс анализа
+    analysis_results = await perform_full_analysis(inspector, dataframes)
 
     def clean_nan(obj):
         if isinstance(obj, dict):
@@ -108,36 +177,46 @@ async def analyze_database(
     if dbType not in ['postgres', 'sqlserver']:
         raise HTTPException(status_code=400, detail="Неподдерживаемый тип базы данных.")
 
-    # Сохраняем подключение для будущего использования
-    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType, alias=alias)
+    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType,
+                                    alias=alias)
 
+    engine = None
     try:
         engine = create_engine(connectionString)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка в строке подключения: {str(e)}")
-
-    try:
         inspector = inspect(engine)
+
         tables = inspector.get_table_names()
         if not tables:
             raise HTTPException(status_code=404, detail="В базе данных не найдено таблиц.")
 
-        dataframes = {table: pd.read_sql_table(table, con=engine) for table in tables}
+        dataframes = {}
+        for table in tables:
+            try:
+                dataframes[table] = pd.read_sql_table(table, con=engine)
+            except Exception as e:
+                logging.warning(f"Не удалось прочитать таблицу {table}: {e}. Пропускаем.")
+
+        if not dataframes:
+            raise HTTPException(status_code=500, detail="Не удалось прочитать ни одну таблицу из базы данных.")
+
+        session_id = str(uuid.uuid4())
+        # Передаем inspector и dataframes для полного анализа
+        report_id = await generate_report(session_id, inspector, dataframes, current_user.id, db)
+        return {"report_id": report_id, "message": "Анализ успешно завершен."}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка при извлечении данных из таблиц: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Произошла критическая ошибка при анализе: {str(e)}")
     finally:
-        engine.dispose()
-
-    session_id = str(uuid.uuid4())
-    # Запускаем генерацию отчета в фоне (здесь для простоты синхронно)
-    report_id = await generate_report(session_id, dataframes, current_user.id, db)
-    return {"report_id": report_id, "message": "Анализ успешно завершен."}
+        if engine:
+            engine.dispose()
 
 
+# ... (остальной код без изменений: get_user_connections, get_report_details) ...
+# Копипаст остального кода из database_analytics.py
 @database_router.get("/connections", response_model=list[schemas.DatabaseConnection])
 async def get_user_connections(
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """
     Возвращает список сохраненных подключений для текущего пользователя.
@@ -147,9 +226,9 @@ async def get_user_connections(
 
 @database_router.get("/reports/{report_id}")
 async def get_report_details(
-    report_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        report_id: int,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """
     Получает конкретный отчет по его ID.
