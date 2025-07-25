@@ -54,24 +54,41 @@ def get_file_by_uid(db: Session, file_uid: str) -> models.File:
     return db.query(models.File).filter(models.File.file_uid == file_uid).first()
 
 
-def create_database_connection(db: Session, user_id: int, connection_string: str, db_type: str):
-    """Создает запись о подключении к базе данных."""
+def create_database_connection(db: Session, user_id: int, connection_string: str, db_type: str, alias: str) -> models.DatabaseConnection:
+    """
+    Создает запись о подключении к базе данных, если такой еще не существует.
+    """
+    # Проверяем, существует ли уже такое подключение
+    existing_connection = db.query(models.DatabaseConnection).filter(
+        models.DatabaseConnection.user_id == user_id,
+        models.DatabaseConnection.connection_string == connection_string
+    ).first()
+
+    if existing_connection:
+        return existing_connection
+
+    # Если не существует, создаем новое
     db_connection = models.DatabaseConnection(
-        user_id=user_id, connection_string=connection_string, db_type=db_type
+        user_id=user_id,
+        connection_string=connection_string,
+        db_type=db_type,
+        alias=alias
     )
     db.add(db_connection)
     db.commit()
     db.refresh(db_connection)
     return db_connection
 
+
 def get_database_connections_by_user_id(db: Session, user_id: int):
     """Получает список подключений пользователя."""
-    return db.query(models.DatabaseConnection).filter(models.DatabaseConnection.user_id == user_id).all()
+    return db.query(models.DatabaseConnection).filter(models.DatabaseConnection.user_id == user_id).order_by(models.DatabaseConnection.created_at.desc()).all()
+
 
 def get_report_by_id(db: Session, report_id: int):
     """Получает отчет по ID."""
-    print("Report_id", report_id)
     return db.query(models.Report).filter(models.Report.id == report_id).first()
+
 
 def get_reports_by_user_id(db: Session, user_id: int):
     """Получает список отчетов пользователя."""

@@ -60,9 +60,14 @@ async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any
     insights = {}
     correlations = {}
     for table, df in dataframes.items():
-        corr = df.corr().replace({np.nan: None}).to_dict()
+        # Выбираем только числовые столбцы для корреляции
+        numeric_df = df.select_dtypes(include=np.number)
+        if not numeric_df.empty:
+            corr = numeric_df.corr().replace({np.nan: None}).to_dict()
+        else:
+            corr = {}
         correlations[table] = corr
-        stats = df.describe().replace({np.nan: None}).to_json()
+        stats = df.describe(include='all').replace({np.nan: None}).to_json()
         prompt = (
             f"Анализируй данные таблицы '{table}'. Вот статистика: {stats}. "
             f"Корреляции: {json.dumps(corr)}. Выяви скрытые паттерны, инсайты и корреляции. "
@@ -93,8 +98,8 @@ async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], 
     report = models.Report(user_id=user_id, status="completed", results=cleaned_results)
     db.add(report)
     db.commit()
-    db.refresh(report) # <-- ДОБАВЛЕНО: Обновляем объект из БД, чтобы получить id
-    logging.warning(f"Создан отчет с ID: {report.id}") # <-- ДОБАВЛЕНО: Логируем ID
+    db.refresh(report)
+    logging.warning(f"Создан отчет с ID: {report.id}")
     return report.id
 
 
@@ -102,35 +107,48 @@ async def generate_report(session_id: str, dataframes: Dict[str, pd.DataFrame], 
 async def analyze_database(
         connectionString: str = Form(...),
         dbType: str = Form(...),
+        alias: str = Form(...),
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
     if dbType not in ['postgres', 'sqlserver']:
         raise HTTPException(status_code=400, detail="Неподдерживаемый тип базы данных.")
 
+    # Сохраняем подключение для будущего использования
+    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType, alias=alias)
+
     try:
-        engine = create_engine(connectionString) if dbType == 'postgres' else create_engine(connectionString, echo=True)
+        engine = create_engine(connectionString)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка подключения: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Ошибка в строке подключения: {str(e)}")
 
     try:
         inspector = inspect(engine)
         tables = inspector.get_table_names()
         if not tables:
-            raise HTTPException(status_code=404, detail="Таблицы не найдены.")
+            raise HTTPException(status_code=404, detail="В базе данных не найдено таблиц.")
 
         dataframes = {table: pd.read_sql_table(table, con=engine) for table in tables}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка извлечения таблиц: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при извлечении данных из таблиц: {str(e)}")
     finally:
         engine.dispose()
 
     session_id = str(uuid.uuid4())
-    s3_keys = save_dataframes_to_s3(session_id, dataframes)  # Сохраняем в S3
-    redis_client.setex(session_id, timedelta(hours=2),
-                       json.dumps({"s3_keys": s3_keys}))  # В Redis только ключи (малый размер)
+    # Запускаем генерацию отчета в фоне (здесь для простоты синхронно)
     report_id = await generate_report(session_id, dataframes, current_user.id, db)
-    return {"report_id": report_id, "message": "Анализ запущен."}
+    return {"report_id": report_id, "message": "Анализ успешно завершен."}
+
+
+@database_router.get("/connections", response_model=list[schemas.DatabaseConnection])
+async def get_user_connections(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """
+    Возвращает список сохраненных подключений для текущего пользователя.
+    """
+    return crud.get_database_connections_by_user_id(db, user_id=current_user.id)
 
 
 @database_router.get("/reports/{report_id}")
@@ -140,17 +158,14 @@ async def get_report_details(
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """
-    Retrieves a specific report by its ID.
+    Получает конкретный отчет по его ID.
     """
-    logging.warning(f"Поиск отчета с ID: {report_id} для пользователя {current_user.id}") # <-- ДОБАВЛЕНО
     report = crud.get_report_by_id(db, report_id=report_id)
-    logging.warning(f"Результат из БД: {report}") # <-- ДОБАВЛЕНО
 
     if not report:
         raise HTTPException(status_code=404, detail="Отчет не найден.")
 
     if report.user_id != current_user.id:
-        logging.warning(f"Доступ запрещен для отчета {report.id}. Владелец: {report.user_id}, запрашивает: {current_user.id}") # <-- ДОБАВЛЕНО
         raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
 
     return report
