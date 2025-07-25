@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, LargeBinary, JSON, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from database import Base
@@ -32,6 +32,7 @@ class DatabaseConnection(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     connection_string = Column(String, nullable=False)
     db_type = Column(String, nullable=False)
+    alias = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="connections")

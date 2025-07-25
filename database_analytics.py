@@ -1,12 +1,8 @@
-# database_analytics.py
-import json
 import uuid
-from datetime import timedelta
 from typing import Dict, Any
 import pandas as pd
 import numpy as np
 import io
-import boto3
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
@@ -19,7 +15,6 @@ import crud
 import database
 import models
 
-# Используем из config (предполагаем S3-клиент и Redis)
 import schemas
 from config import redis_client, API_KEY, S3_BUCKET_NAME, s3_client
 
@@ -31,11 +26,9 @@ def save_dataframes_to_s3(session_id: str, dataframes: Dict[str, pd.DataFrame]) 
     """Сохраняет DataFrames в S3 как Parquet и возвращает ключи."""
     s3_keys = {}
     for table, df in dataframes.items():
-        # Обрабатываем NaN и Timestamp перед сохранением
         df = df.replace({np.nan: None})
         df = df.applymap(lambda x: x.isoformat() if isinstance(x, pd.Timestamp) else x)
 
-        # Сохраняем как Parquet в буфер
         buffer = io.BytesIO()
         df.to_parquet(buffer, index=False)
         buffer.seek(0)
