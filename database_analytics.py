@@ -60,7 +60,7 @@ async def perform_analysis(dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any
     insights = {}
     correlations = {}
     for table, df in dataframes.items():
-        corr = df.corr(numeric_only=True).replace({np.nan: None}).to_dict()
+        corr = df.corr().replace({np.nan: None}).to_dict()
         correlations[table] = corr
         stats = df.describe().replace({np.nan: None}).to_json()
         prompt = (
