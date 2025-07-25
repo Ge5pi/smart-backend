@@ -1,5 +1,5 @@
 import uuid
-from typing import Dict, Any, Set, Tuple
+from typing import Dict, Any, Set, Tuple, List
 import pandas as pd
 import numpy as np
 import io
@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 import logging
 import json
+import matplotlib.pyplot as plt
+import seaborn as sns
 import auth
 import config
 import crud
@@ -33,7 +35,7 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
         f"Вот описательная статистика: {stats}. "
         f"Вот матрица корреляций для числовых полей: {json.dumps(corr)}. "
         "Твоя задача — выявить ключевые инсайты, скрытые закономерности и аномалии в данных этой таблицы. "
-        "Будь кратким, структурированным и пиши на русском языке."
+        "Будь кратким, структурированным и пиши на русском языке, используя Markdown для выделения (`**термин**`)."
     )
 
     response = client.chat.completions.create(
@@ -46,9 +48,7 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    """
-    Находит внешние ключи, объединяет таблицы и анализирует результат.
-    """
+    """Находит внешние ключи, объединяет таблицы и анализирует результат."""
     joint_insights = {}
     analyzed_pairs: Set[Tuple[str, str]] = set()
     all_tables = list(dataframes.keys())
@@ -64,7 +64,6 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
             left_table = table_name
             right_table = fk['referred_table']
 
-            # Сортируем имена таблиц, чтобы избежать дублирования (user, post) и (post, user)
             pair = tuple(sorted((left_table, right_table)))
             if pair in analyzed_pairs:
                 continue
@@ -81,7 +80,6 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
             right_on = fk['referred_columns']
 
             try:
-                # Объединяем таблицы, добавляя суффиксы, чтобы избежать конфликта имен столбцов
                 merged_df = pd.merge(
                     df_left, df_right,
                     left_on=left_on,
@@ -93,11 +91,7 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                     continue
 
                 join_key = f"{left_table} 🔗 {right_table}"
-
-                # Анализируем объединенный DataFrame
                 analysis_result = analyze_single_table(join_key, merged_df)
-
-                # Корректируем промпт для GPT, чтобы он фокусировался на межтабличных связях
                 stats = merged_df.describe(include='all').replace({np.nan: None}).to_json()
                 corr = analysis_result["correlations"]
 
@@ -108,7 +102,7 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                     f"Вот матрица корреляций: {json.dumps(corr)}. "
                     f"Сосредоточься на поиске инсайтов, которые возникают именно из-за связи двух таблиц. "
                     f"Например, как атрибуты из одной таблицы влияют на атрибуты в другой? "
-                    "Ответ дай на русском языке, кратко и по делу."
+                    "Ответ дай на русском языке, кратко и по делу, используя Markdown для выделения (`**термин**`)."
                 )
 
                 response = client.chat.completions.create(
@@ -126,27 +120,125 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
     return joint_insights
 
 
-async def perform_full_analysis(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    """Выполняет полный анализ: по каждой таблице и по их связям."""
+def generate_visualizations(
+        dataframes: Dict[str, pd.DataFrame], report_id: int
+) -> Dict[str, List[str]]:
+    visualizations = {}
+    sns.set_theme(style="whitegrid")
 
-    # 1. Анализ по отдельным таблицам
+    for name, df in dataframes.items():
+        if df.empty:
+            continue
+
+        safe_name = "".join(c if c.isalnum() else "_" for c in name)
+
+        df_info = df.dtypes.to_string()
+        prompt = (
+            f"Для DataFrame с названием '{name}' и следующей структурой столбцов:\n{df_info}\n\n"
+            "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
+            "Ответ предоставь в виде JSON-массива. Каждый объект в массиве должен содержать: "
+            "'chart_type' (тип графика: 'hist', 'bar', 'scatter', 'pie'), "
+            "'columns' (список столбцов для использования), и 'title' (название графика на русском). "
+            "Для 'bar' первый столбец - категориальный, второй - числовой. Для 'hist' - один числовой столбец. "
+            "Для 'scatter' - два числовых столбца. Для 'pie' - один категориальный столбец (до 10 уникальных значений). "
+            "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок. Не предлагай pie для колонок с большим количеством уникальных значений."
+            "Возвращай только JSON."
+        )
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2
+            )
+            chart_ideas = json.loads(response.choices[0].message.content)
+
+            chart_urls = []
+            for i, idea in enumerate(chart_ideas):
+                plt.figure(figsize=(10, 6))
+
+                chart_type = idea.get("chart_type")
+                columns = idea.get("columns", [])
+                title = idea.get("title", "Сгенерированный график")
+
+                try:
+                    if chart_type == 'hist' and len(columns) == 1 and pd.api.types.is_numeric_dtype(df[columns[0]]):
+                        sns.histplot(df, x=columns[0], kde=True)
+                    elif chart_type == 'bar' and len(columns) == 2:
+                        top_15 = df.groupby(columns[0])[columns[1]].sum().nlargest(15)
+                        sns.barplot(x=top_15.index, y=top_15.values)
+                        plt.xticks(rotation=45, ha='right')
+                    elif chart_type == 'scatter' and len(columns) == 2 and all(
+                            pd.api.types.is_numeric_dtype(df[c]) for c in columns):
+                        sns.scatterplot(df, x=columns[0], y=columns[1])
+                    elif chart_type == 'pie' and len(columns) == 1 and df[columns[0]].nunique() <= 10:
+                        df[columns[0]].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, counterclock=False)
+                        plt.ylabel('')
+                    else:
+                        continue
+
+                    plt.title(title)
+                    plt.tight_layout()
+
+                    buffer = io.BytesIO()
+                    plt.savefig(buffer, format='png', bbox_inches='tight')
+                    buffer.seek(0)
+
+                    s3_key = f"charts/{report_id}/{safe_name}_{i}.png"
+
+                    config.s3_client.put_object(
+                        Bucket=config.S3_BUCKET_NAME,
+                        Key=s3_key,
+                        Body=buffer,
+                        ContentType='image/png',
+                        ACL='public-read'
+                    )
+
+                    chart_url = f"https://{config.S3_BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
+                    chart_urls.append(chart_url)
+
+                except Exception as e:
+                    logging.error(f"Не удалось создать график '{title}': {e}")
+                finally:
+                    plt.close()
+
+            if chart_urls:
+                visualizations[name] = chart_urls
+
+        except Exception as e:
+            logging.error(f"Ошибка при генерации идей для графиков для '{name}': {e}")
+
+    return visualizations
+
+
+async def perform_full_analysis(
+        inspector: Inspector, dataframes: Dict[str, pd.DataFrame], report_id: int
+) -> Dict[str, Any]:
     single_table_analysis = {}
     for table, df in dataframes.items():
         single_table_analysis[table] = analyze_single_table(table, df)
 
-    # 2. Анализ межтабличных связей
     joint_table_analysis = analyze_joins(inspector, dataframes)
+
+    all_dfs_for_viz = dataframes.copy()
+    visualizations = generate_visualizations(all_dfs_for_viz, report_id)
 
     return {
         "single_table_insights": single_table_analysis,
-        "joint_table_insights": joint_table_analysis
+        "joint_table_insights": joint_table_analysis,
+        "visualizations": visualizations
     }
 
 
-async def generate_report(session_id: str, inspector: Inspector, dataframes: Dict[str, pd.DataFrame], user_id: int,
-                          db: Session) -> int:
-    # Запускаем новый, улучшенный процесс анализа
-    analysis_results = await perform_full_analysis(inspector, dataframes)
+async def generate_report(user_id: int, inspector: Inspector, dataframes: Dict[str, pd.DataFrame], db: Session) -> int:
+    report = models.Report(user_id=user_id, status="pending")
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+
+    report_id = report.id
+
+    analysis_results = await perform_full_analysis(inspector, dataframes, report_id)
 
     def clean_nan(obj):
         if isinstance(obj, dict):
@@ -158,11 +250,12 @@ async def generate_report(session_id: str, inspector: Inspector, dataframes: Dic
         return obj
 
     cleaned_results = clean_nan(analysis_results)
-    report = models.Report(user_id=user_id, status="completed", results=cleaned_results)
-    db.add(report)
+
+    report.status = "completed"
+    report.results = cleaned_results
     db.commit()
-    db.refresh(report)
-    logging.warning(f"Создан отчет с ID: {report.id}")
+
+    logging.warning(f"Создан и обновлен отчет с ID: {report.id}")
     return report.id
 
 
@@ -199,9 +292,7 @@ async def analyze_database(
         if not dataframes:
             raise HTTPException(status_code=500, detail="Не удалось прочитать ни одну таблицу из базы данных.")
 
-        session_id = str(uuid.uuid4())
-        # Передаем inspector и dataframes для полного анализа
-        report_id = await generate_report(session_id, inspector, dataframes, current_user.id, db)
+        report_id = await generate_report(current_user.id, inspector, dataframes, db)
         return {"report_id": report_id, "message": "Анализ успешно завершен."}
 
     except Exception as e:
@@ -211,16 +302,11 @@ async def analyze_database(
             engine.dispose()
 
 
-# ... (остальной код без изменений: get_user_connections, get_report_details) ...
-# Копипаст остального кода из database_analytics.py
 @database_router.get("/connections", response_model=list[schemas.DatabaseConnection])
 async def get_user_connections(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """
-    Возвращает список сохраненных подключений для текущего пользователя.
-    """
     return crud.get_database_connections_by_user_id(db, user_id=current_user.id)
 
 
@@ -230,9 +316,6 @@ async def get_report_details(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """
-    Получает конкретный отчет по его ID.
-    """
     report = crud.get_report_by_id(db, report_id=report_id)
 
     if not report:
