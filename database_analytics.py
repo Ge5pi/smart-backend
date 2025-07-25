@@ -20,6 +20,7 @@ import database
 import models
 
 # Используем из config (предполагаем S3-клиент и Redis)
+import schemas
 from config import redis_client, API_KEY, S3_BUCKET_NAME, s3_client
 
 database_router = APIRouter(prefix="/analytics/database")

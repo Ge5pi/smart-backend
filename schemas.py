@@ -1,6 +1,5 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional, List
 
 
 class FileBase(BaseModel):
@@ -33,6 +32,18 @@ class User(UserBase):
     id: int
     is_active: bool
     files: list[File] = []
+
+    class Config:
+        from_attributes = True
+
+
+class DatabaseConnection(BaseModel):
+    id: int
+    user_id: int
+    connection_string: str
+    db_type: str
+    alias: str
+    created_at: datetime
 
     class Config:
         from_attributes = True
