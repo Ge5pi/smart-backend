@@ -1,4 +1,3 @@
-import uuid
 from typing import Dict, Any, Set, Tuple, List
 import pandas as pd
 import numpy as np
@@ -24,8 +23,8 @@ database_router = APIRouter(prefix="/analytics/database")
 client = OpenAI(api_key=API_KEY)
 
 
+# --- Функции analyze_single_table и analyze_joins остаются без изменений ---
 def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
-    """Анализирует отдельную таблицу и возвращает инсайты и корреляции."""
     numeric_df = df.select_dtypes(include=np.number)
     corr = numeric_df.corr().replace({np.nan: None}).to_dict() if not numeric_df.empty else {}
     stats = df.describe(include='all').replace({np.nan: None}).to_json()
@@ -48,7 +47,6 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    """Находит внешние ключи, объединяет таблицы и анализирует результат."""
     joint_insights = {}
     analyzed_pairs: Set[Tuple[str, str]] = set()
     all_tables = list(dataframes.keys())
@@ -120,6 +118,7 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
     return joint_insights
 
 
+# ОБНОВЛЕННАЯ ФУНКЦИЯ для генерации графиков с pre-signed URLs
 def generate_visualizations(
         dataframes: Dict[str, pd.DataFrame], report_id: int
 ) -> Dict[str, List[str]]:
@@ -131,7 +130,6 @@ def generate_visualizations(
             continue
 
         safe_name = "".join(c if c.isalnum() else "_" for c in name)
-
         df_info = df.dtypes.to_string()
         prompt = (
             f"Для DataFrame с названием '{name}' и следующей структурой столбцов:\n{df_info}\n\n"
@@ -186,19 +184,24 @@ def generate_visualizations(
 
                     s3_key = f"charts/{report_id}/{safe_name}_{i}.png"
 
+                    # ИЗМЕНЕНИЕ: Убираем ACL и загружаем приватный объект
                     config.s3_client.put_object(
                         Bucket=config.S3_BUCKET_NAME,
                         Key=s3_key,
                         Body=buffer,
-                        ContentType='image/png',
-                        ACL='public-read'
+                        ContentType='image/png'
                     )
 
-                    chart_url = f"https://{config.S3_BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
-                    chart_urls.append(chart_url)
+                    # ИЗМЕНЕНИЕ: Генерируем временную ссылку на 1 час
+                    presigned_url = config.s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key},
+                        ExpiresIn=3600  # Ссылка действительна 1 час
+                    )
+                    chart_urls.append(presigned_url)
 
                 except Exception as e:
-                    logging.error(f"Не удалось создать график '{title}': {e}")
+                    logging.error(f"Не удалось создать график '{title}': {e}", exc_info=True)
                 finally:
                     plt.close()
 
@@ -211,6 +214,7 @@ def generate_visualizations(
     return visualizations
 
 
+# --- Остальные функции (perform_full_analysis, generate_report, analyze_database, etc.) остаются без изменений ---
 async def perform_full_analysis(
         inspector: Inspector, dataframes: Dict[str, pd.DataFrame], report_id: int
 ) -> Dict[str, Any]:
@@ -220,8 +224,7 @@ async def perform_full_analysis(
 
     joint_table_analysis = analyze_joins(inspector, dataframes)
 
-    all_dfs_for_viz = dataframes.copy()
-    visualizations = generate_visualizations(all_dfs_for_viz, report_id)
+    visualizations = generate_visualizations(dataframes.copy(), report_id)
 
     return {
         "single_table_insights": single_table_analysis,
@@ -296,6 +299,7 @@ async def analyze_database(
         return {"report_id": report_id, "message": "Анализ успешно завершен."}
 
     except Exception as e:
+        logging.error("Критическая ошибка при анализе", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Произошла критическая ошибка при анализе: {str(e)}")
     finally:
         if engine:
