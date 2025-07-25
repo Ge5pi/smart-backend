@@ -12,6 +12,7 @@ import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 import auth
+from celery_worker import run_db_analysis_task
 import config
 import crud
 import database
@@ -214,7 +215,6 @@ def generate_visualizations(
     return visualizations
 
 
-# --- Остальные функции (perform_full_analysis, generate_report, analyze_database, etc.) остаются без изменений ---
 async def perform_full_analysis(
         inspector: Inspector, dataframes: Dict[str, pd.DataFrame], report_id: int
 ) -> Dict[str, Any]:
@@ -270,40 +270,29 @@ async def analyze_database(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
+    """
+    Эндпоинт для запуска анализа. Теперь он не ждет завершения.
+    """
     if dbType not in ['postgres', 'sqlserver']:
         raise HTTPException(status_code=400, detail="Неподдерживаемый тип базы данных.")
 
-    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType,
-                                    alias=alias)
+    # Сохраняем данные подключения
+    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType, alias=alias)
 
-    engine = None
-    try:
-        engine = create_engine(connectionString)
-        inspector = inspect(engine)
+    # 1. Создаем запись отчета в БД со статусом "в очереди"
+    report = crud.create_report(db, user_id=current_user.id, status="queued")
+    logging.warning(f"Отчет ID:{report.id} добавлен в очередь.")
 
-        tables = inspector.get_table_names()
-        if not tables:
-            raise HTTPException(status_code=404, detail="В базе данных не найдено таблиц.")
+    # 2. Запускаем фоновую задачу Celery
+    run_db_analysis_task.delay(
+        report_id=report.id,
+        user_id=current_user.id,
+        connection_string=connectionString,
+        db_type=dbType
+    )
 
-        dataframes = {}
-        for table in tables:
-            try:
-                dataframes[table] = pd.read_sql_table(table, con=engine)
-            except Exception as e:
-                logging.warning(f"Не удалось прочитать таблицу {table}: {e}. Пропускаем.")
-
-        if not dataframes:
-            raise HTTPException(status_code=500, detail="Не удалось прочитать ни одну таблицу из базы данных.")
-
-        report_id = await generate_report(current_user.id, inspector, dataframes, db)
-        return {"report_id": report_id, "message": "Анализ успешно завершен."}
-
-    except Exception as e:
-        logging.error("Критическая ошибка при анализе", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Произошла критическая ошибка при анализе: {str(e)}")
-    finally:
-        if engine:
-            engine.dispose()
+    # 3. Мгновенно возвращаем ответ пользователю
+    return {"report_id": report.id, "message": "Анализ запущен в фоновом режиме. Отчет будет готов в ближайшее время."}
 
 
 @database_router.get("/connections", response_model=list[schemas.DatabaseConnection])

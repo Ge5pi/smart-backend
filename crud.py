@@ -93,3 +93,29 @@ def get_report_by_id(db: Session, report_id: int):
 def get_reports_by_user_id(db: Session, user_id: int):
     """Получает список отчетов пользователя."""
     return db.query(models.Report).filter(models.Report.user_id == user_id).order_by(models.Report.created_at.desc()).all()
+
+
+def create_report(db: Session, user_id: int, status: str = "pending") -> models.Report:
+    """Создает пустую запись отчета и возвращает ее."""
+    report = models.Report(user_id=user_id, status=status)
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return report
+
+def update_report_status(db: Session, report_id: int, status: str, error_message: str = None):
+    """Обновляет статус (и опционально ошибку) отчета."""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if report:
+        report.status = status
+        if error_message:
+            report.results = {"error": error_message} # Записываем ошибку в results
+        db.commit()
+
+def update_report_results(db: Session, report_id: int, results: dict, status: str):
+    """Обновляет результаты и статус отчета."""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if report:
+        report.results = results
+        report.status = status
+        db.commit()
