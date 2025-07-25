@@ -119,22 +119,31 @@ def generate_visualizations(
 
         safe_name = "".join(c if c.isalnum() else "_" for c in name)
         df_info = df.dtypes.to_string()
+
+        # ИЗМЕНЕНИЕ: Обновляем промпт для соответствия JSON Mode
         prompt = (
             f"Для DataFrame с названием '{name}' и следующей структурой столбцов:\n{df_info}\n\n"
-            "Предложи до 2 наиболее подходящих визуализаций. "
-            "Ответ предоставь в виде JSON-массива объектов с ключами: "
-            "'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
-            "'columns' (список столбцов), 'title' (название). "
-            "Возвращай только JSON."
+            "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
+            "Ответ предоставь в виде JSON-объекта с ключом 'charts', который содержит массив предложений. "
+            "Каждый объект в массиве должен содержать: 'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
+            "'columns' (список столбцов), и 'title' (название графика на русском). "
+            "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 уникальных значений. "
+            "Пример: {\"charts\": [{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример\"}]}"
         )
 
         try:
             response = client.chat.completions.create(
-                model="gpt-4-turbo",
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
+                temperature=0.2,
+                response_format={"type": "json_object"}
             )
-            chart_ideas = json.loads(response.choices[0].message.content)
+            response_data = json.loads(response.choices[0].message.content)
+            chart_ideas = response_data.get("charts", [])
+
+            if not chart_ideas:
+                logging.warning(f"GPT не предложил идей для графиков для '{name}'.")
+                continue
 
             chart_urls = []
             for i, idea in enumerate(chart_ideas):
@@ -182,8 +191,12 @@ def generate_visualizations(
 
             if chart_urls:
                 visualizations[name] = chart_urls
+
+        except json.JSONDecodeError:
+            logging.error(
+                f"Не удалось распарсить JSON от OpenAI для '{name}'. Ответ: {response.choices[0].message.content}")
         except Exception as e:
-            logging.error(f"Ошибка при генерации идей для графиков для '{name}': {e}")
+            logging.error(f"Общая ошибка при генерации идей для графиков для '{name}': {e}")
 
     return visualizations
 
