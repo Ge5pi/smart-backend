@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 import logging
 
 # ИЗМЕНЕНИЕ: Импортируем задачу Celery
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, Response
 
 from celery_worker import run_db_analysis_task
 import auth
@@ -92,16 +92,27 @@ async def download_report_pdf(
     if report.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
 
+    if report.status != 'completed':
+        raise HTTPException(status_code=400, detail="Отчет еще не готов для скачивания.")
+
     try:
         pdf_buffer = generate_pdf_report(report)
 
-        return StreamingResponse(
-            io.BytesIO(pdf_buffer.read()),
+        # Проверяем, что PDF buffer не пустой
+        pdf_content = pdf_buffer.getvalue()
+        if len(pdf_content) == 0:
+            raise HTTPException(status_code=500, detail="Сгенерированный PDF файл пустой.")
+
+        # Возвращаем PDF с правильными заголовками
+        return Response(
+            content=pdf_content,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=report_{report_id}.pdf"
+                "Content-Disposition": f"attachment; filename=\"report_{report_id}.pdf\"",
+                "Content-Length": str(len(pdf_content)),
+                "Cache-Control": "no-cache"
             }
         )
     except Exception as e:
         logging.error(f"Ошибка при генерации PDF для отчета {report_id}: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка при генерации PDF отчета.")
+        raise HTTPException(status_code=500, detail=f"Ошибка при генерации PDF отчета: {str(e)}")
