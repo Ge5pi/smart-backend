@@ -13,6 +13,7 @@ from config import API_KEY
 
 client = OpenAI(api_key=API_KEY)
 
+S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR = 365 * 24 * 60 * 60
 
 def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
     numeric_df = df.select_dtypes(include=np.number)
@@ -181,7 +182,8 @@ def generate_visualizations(
                     )
 
                     presigned_url = config.s3_client.generate_presigned_url(
-                        'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key}, ExpiresIn=360000000
+                        'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key},
+                        ExpiresIn=S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR
                     )
                     chart_urls.append(presigned_url)
                 except Exception as e:
