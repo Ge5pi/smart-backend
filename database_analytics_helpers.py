@@ -124,14 +124,15 @@ def generate_visualizations(
         column_info = [{"name": col, "dtype": str(df[col].dtype), "nunique": df[col].nunique(),
                         "is_numeric": pd.api.types.is_numeric_dtype(df[col])} for col in df.columns]
 
+        # Обновленный промпт с уточнением для bar-графиков
         prompt = (
             f"Для DataFrame с названием '{name}' и следующей структурой столбцов: {json.dumps(column_info)}. "
             "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
             "Ответ предоставь в виде JSON-объекта с ключом 'charts', который содержит массив предложений. "
             "Каждый объект в массиве должен содержать: 'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
-            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА), и 'title' (название графика на русском). "
+            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА). Для 'bar' графика: если это распределение по одной категории, используй 1 столбец; если это сумма по категории, используй 2 столбца (категория, числовой показатель). И 'title' (название графика на русском). "
             "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 уникальных значений. "
-            "Пример: {\"charts\": [{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример\"}]}"
+            "Пример: {\"charts\": [{\"chart_type\": \"bar\", \"columns\": [\"col1\"], \"title\": \"Пример распределения\"}], {\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример суммы\"}]}"
         )
 
         try:
@@ -176,26 +177,39 @@ def generate_visualizations(
                                 f"Не удалось создать гистограмму для '{col}': Столбец не является числовым после попытки преобразования.")
                             plt.close()
                             continue
-                    elif chart_type == 'bar' and len(columns) == 2:
-                        x_col, y_col = columns[0], columns[1]
-                        # Attempt to convert y_col to numeric
-                        plot_df[y_col] = pd.to_numeric(plot_df[y_col], errors='coerce')
+                    elif chart_type == 'bar':  # Изменение: теперь bar может принимать 1 или 2 столбца
+                        if len(columns) == 1:
+                            col = columns[0]
+                            # Count unique values for single-column bar chart (frequency distribution)
+                            value_counts = plot_df[col].value_counts().nlargest(15)  # Top 15 categories
+                            sns.barplot(x=value_counts.index, y=value_counts.values)
+                            plt.xticks(rotation=45, ha='right')
+                            plt.ylabel('Частота')  # Добавлено название оси Y
+                        elif len(columns) == 2:
+                            x_col, y_col = columns[0], columns[1]
+                            # Attempt to convert y_col to numeric
+                            plot_df[y_col] = pd.to_numeric(plot_df[y_col], errors='coerce')
 
-                        if pd.api.types.is_numeric_dtype(plot_df[y_col]):
-                            # Filter out NaN in relevant columns for grouping/summing
-                            temp_df = plot_df.dropna(subset=[x_col, y_col])
-                            if not temp_df.empty:
-                                top_15 = temp_df.groupby(x_col)[y_col].sum().nlargest(15)
-                                sns.barplot(x=top_15.index, y=top_15.values)
-                                plt.xticks(rotation=45, ha='right')
+                            if pd.api.types.is_numeric_dtype(plot_df[y_col]):
+                                # Filter out NaN in relevant columns for grouping/summing
+                                temp_df = plot_df.dropna(subset=[x_col, y_col])
+                                if not temp_df.empty:
+                                    top_15 = temp_df.groupby(x_col)[y_col].sum().nlargest(15)
+                                    sns.barplot(x=top_15.index, y=top_15.values)
+                                    plt.xticks(rotation=45, ha='right')
+                                else:
+                                    logging.warning(
+                                        f"Недостаточно данных для построения столбчатой диаграммы для '{x_col}' и '{y_col}' после очистки NaN.")
+                                    plt.close()
+                                    continue
                             else:
                                 logging.warning(
-                                    f"Недостаточно данных для построения столбчатой диаграммы для '{x_col}' и '{y_col}' после очистки NaN.")
+                                    f"Не удалось создать столбчатую диаграмму для '{y_col}': Столбец агрегации не является числовым после попытки преобразования.")
                                 plt.close()
                                 continue
-                        else:
+                        else:  # Если количество столбцов не 1 и не 2
                             logging.warning(
-                                f"Не удалось создать столбчатую диаграмму для '{y_col}': Столбец агрегации не является числовым после попытки преобразования.")
+                                f"Не удалось создать столбчатую диаграмму '{title}' для таблицы '{name}': Неверное количество столбцов ({len(columns)}). Ожидается 1 или 2.")
                             plt.close()
                             continue
                     elif chart_type == 'scatter' and len(columns) == 2:
@@ -216,7 +230,6 @@ def generate_visualizations(
                     elif chart_type == 'pie' and len(columns) == 1:
                         col = columns[0]
                         # For pie, ensure the column is suitable (e.g., categorical or low unique values)
-                        # The nunique check is already in the prompt, but an explicit check here is good
                         if plot_df[
                             col].nunique() <= 10:  # Re-check the nunique after potential conversion or for robustness
                             plot_df[col].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, counterclock=False)
