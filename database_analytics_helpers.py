@@ -274,7 +274,7 @@ def generate_visualizations(
 
                     presigned_url = config.s3_client.generate_presigned_url(
                         'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key},
-                        ExpiresIn=S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR
+                        ExpiresIn=604700
                     )
                     chart_urls.append(presigned_url)
                 except Exception as e:
