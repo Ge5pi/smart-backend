@@ -95,9 +95,9 @@ def get_reports_by_user_id(db: Session, user_id: int):
     return db.query(models.Report).filter(models.Report.user_id == user_id).order_by(models.Report.created_at.desc()).all()
 
 
-def create_report(db: Session, user_id: int, status: str = "pending") -> models.Report:
+def create_report(db: Session, user_id: int, connection_id: int = None, status: str = "pending") -> models.Report:
     """Создает пустую запись отчета и возвращает ее."""
-    report = models.Report(user_id=user_id, status=status)
+    report = models.Report(user_id=user_id, connection_id=connection_id, status=status)
     db.add(report)
     db.commit()
     db.refresh(report)

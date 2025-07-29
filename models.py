@@ -40,10 +40,13 @@ class DatabaseConnection(Base):
 
 class Report(Base):
     __tablename__ = "reports"
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    connection_id = Column(Integer, ForeignKey("db_connections.id"), nullable=True)
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
     results = Column(JSON, nullable=True)
 
     user = relationship("User", back_populates="reports")
+    connection = relationship("DatabaseConnection")

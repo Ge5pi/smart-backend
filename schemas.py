@@ -47,3 +47,15 @@ class DatabaseConnection(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class Report(BaseModel):
+    id: int
+    user_id: int
+    connection_id: int | None
+    status: str
+    created_at: datetime
+    results: dict | None = None
+
+    class Config:
+        from_attributes = True

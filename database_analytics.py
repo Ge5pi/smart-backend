@@ -12,6 +12,7 @@ import schemas
 
 database_router = APIRouter(prefix="/analytics/database")
 
+
 @database_router.post("/analyze")
 async def analyze_database(
         connectionString: str = Form(...),
@@ -23,9 +24,10 @@ async def analyze_database(
     if dbType not in ['postgres', 'sqlserver']:
         raise HTTPException(status_code=400, detail="Неподдерживаемый тип базы данных.")
 
-    crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString, db_type=dbType, alias=alias)
+    connection = crud.create_database_connection(db, user_id=current_user.id, connection_string=connectionString,
+                                                 db_type=dbType, alias=alias)
 
-    report = crud.create_report(db, user_id=current_user.id, status="queued")
+    report = crud.create_report(db, user_id=current_user.id, connection_id=connection.id, status="queued")
     logging.warning(f"Отчет ID:{report.id} добавлен в очередь.")
 
     run_db_analysis_task.delay(
@@ -61,3 +63,11 @@ async def get_report_details(
         raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
 
     return report
+
+
+@database_router.get("/reports", response_model=list[schemas.Report])
+async def get_user_reports(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return crud.get_reports_by_user_id(db, user_id=current_user.id)
