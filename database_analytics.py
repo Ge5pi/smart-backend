@@ -1,14 +1,19 @@
+import io
+
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy.orm import Session
 import logging
 
 # ИЗМЕНЕНИЕ: Импортируем задачу Celery
+from starlette.responses import StreamingResponse
+
 from celery_worker import run_db_analysis_task
 import auth
 import crud
 import database
 import models
 import schemas
+from pdf_generator import generate_pdf_report
 
 database_router = APIRouter(prefix="/analytics/database")
 
@@ -71,3 +76,32 @@ async def get_user_reports(
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return crud.get_reports_by_user_id(db, user_id=current_user.id)
+
+
+@database_router.get("/reports/{report_id}/pdf")
+async def download_report_pdf(
+        report_id: int,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    report = crud.get_report_by_id(db, report_id=report_id)
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден.")
+
+    if report.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра этого отчета.")
+
+    try:
+        pdf_buffer = generate_pdf_report(report)
+
+        return StreamingResponse(
+            io.BytesIO(pdf_buffer.read()),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=report_{report_id}.pdf"
+            }
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при генерации PDF для отчета {report_id}: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка при генерации PDF отчета.")
