@@ -119,15 +119,15 @@ def generate_visualizations(
             continue
 
         safe_name = "".join(c if c.isalnum() else "_" for c in name)
-        df_info = df.dtypes.to_string()
+        column_names = df.columns.tolist()
+        column_types = {col: str(df[col].dtype) for col in column_names}
 
-        # ИЗМЕНЕНИЕ: Обновляем промпт для соответствия JSON Mode
         prompt = (
-            f"Для DataFrame с названием '{name}' и следующей структурой столбцов:\n{df_info}\n\n"
-            "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
+            f"Для DataFrame с названием '{name}' со следующими столбцами и их типами: {json.dumps(column_types)}. "
+            f"Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
             "Ответ предоставь в виде JSON-объекта с ключом 'charts', который содержит массив предложений. "
             "Каждый объект в массиве должен содержать: 'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
-            "'columns' (список столбцов), и 'title' (название графика на русском). "
+            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА), и 'title' (название графика на русском). "
             "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 уникальных значений. "
             "Пример: {\"charts\": [{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример\"}]}"
         )
@@ -152,6 +152,11 @@ def generate_visualizations(
                 chart_type, columns, title = idea.get("chart_type"), idea.get("columns", []), idea.get("title",
                                                                                                        "Сгенерированный график")
 
+                if not all(col in df.columns for col in columns):
+                    logging.warning(f"Не удалось создать график '{title}' для таблицы '{name}': Один или несколько предложенных столбцов ({', '.join(columns)}) не найдены в DataFrame.")
+                    plt.close()
+                    continue
+
                 try:
                     if chart_type == 'hist' and len(columns) == 1 and pd.api.types.is_numeric_dtype(df[columns[0]]):
                         sns.histplot(df, x=columns[0], kde=True)
@@ -166,6 +171,8 @@ def generate_visualizations(
                         df[columns[0]].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, counterclock=False)
                         plt.ylabel('')
                     else:
+                        logging.warning(f"Не удалось создать график '{title}' для таблицы '{name}': Неподдерживаемый тип графика или неверное количество/тип столбцов.")
+                        plt.close()
                         continue
 
                     plt.title(title)
@@ -182,8 +189,7 @@ def generate_visualizations(
                     )
 
                     presigned_url = config.s3_client.generate_presigned_url(
-                        'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key},
-                        ExpiresIn=S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR
+                        'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key}, ExpiresIn=S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR
                     )
                     chart_urls.append(presigned_url)
                 except Exception as e:
