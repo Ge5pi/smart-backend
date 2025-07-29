@@ -10,10 +10,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import config
 from config import API_KEY
+import urllib.parse
 
 client = OpenAI(api_key=API_KEY)
 
 S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR = 365 * 24 * 60 * 60
+
 
 def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
     numeric_df = df.select_dtypes(include=np.number)
@@ -109,30 +111,32 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
 
 
 def generate_visualizations(
-        dataframes: Dict[str, pd.DataFrame], report_id: int
-) -> Dict[str, List[str]]:
+        dataframes: dict[str, pd.DataFrame], report_id: int
+) -> dict[str, list[str]]:
     visualizations = {}
     sns.set_theme(style="whitegrid")
 
     for name, df in dataframes.items():
         if df.empty:
+            logging.warning(f"DataFrame для таблицы '{name}' пуст, графики не будут сгенерированы.")
             continue
 
-        safe_name = "".join(c if c.isalnum() else "_" for c in name)
-
         # Prepare column info for GPT more explicitly, including types for better suggestions
-        column_info = [{"name": col, "dtype": str(df[col].dtype), "nunique": df[col].nunique(),
-                        "is_numeric": pd.api.types.is_numeric_dtype(df[col])} for col in df.columns]
+        column_info = [
+            {"name": col, "dtype": str(df[col].dtype), "nunique": df[col].nunique(),
+             "is_numeric": pd.api.types.is_numeric_dtype(df[col])}
+            for col in df.columns
+        ]
 
-        # Обновленный промпт с уточнением для bar-графиков
+        # Обновленный промпт с уточнением для bar-графиков и явным указанием типов столбцов
         prompt = (
-            f"Для DataFrame с названием '{name}' и следующей структурой столбцов: {json.dumps(column_info)}. "
+            f"Проанализируй DataFrame с названием '{name}' со следующими столбцами и их характеристиками: {json.dumps(column_info)}. "
             "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
             "Ответ предоставь в виде JSON-объекта с ключом 'charts', который содержит массив предложений. "
             "Каждый объект в массиве должен содержать: 'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
-            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА). Для 'bar' графика: если это распределение по одной категории, используй 1 столбец; если это сумма по категории, используй 2 столбца (категория, числовой показатель). И 'title' (название графика на русском). "
+            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА). Для 'bar' графика: если это распределение по одной категории (частота), используй 1 столбец; если это агрегированное значение по категории (например, сумма), используй 2 столбца (категория, числовой показатель). И 'title' (название графика на русском). "
             "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 уникальных значений. "
-            "Пример: {\"charts\": [{\"chart_type\": \"bar\", \"columns\": [\"col1\"], \"title\": \"Пример распределения\"}], {\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример суммы\"}]}"
+            "Пример: {{\"charts\": [{{\"chart_type\": \"bar\", \"columns\": [\"col1\"], \"title\": \"Пример распределения\"}}, {{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример суммы\"}}]}}"
         )
 
         try:
@@ -152,14 +156,15 @@ def generate_visualizations(
             chart_urls = []
             for i, idea in enumerate(chart_ideas):
                 plt.figure(figsize=(10, 6))
-                chart_type, columns, title = idea.get("chart_type"), idea.get("columns", []), idea.get("title",
-                                                                                                       "Сгенерированный график")
+                chart_type = idea.get("chart_type")
+                columns = idea.get("columns", [])
+                title = idea.get("title", "Сгенерированный график")
 
-                # Ensure all proposed columns exist
+                # Ensure all proposed columns exist in the DataFrame
                 if not all(col in df.columns for col in columns):
                     logging.warning(
                         f"Не удалось создать график '{title}' для таблицы '{name}': Один или несколько предложенных столбцов ({', '.join(columns)}) не найдены в DataFrame.")
-                    plt.close()
+                    plt.close()  # Important to close the figure
                     continue
 
                 # Create a copy for plotting to avoid modifying the original dataframe in case of type conversion
@@ -177,14 +182,20 @@ def generate_visualizations(
                                 f"Не удалось создать гистограмму для '{col}': Столбец не является числовым после попытки преобразования.")
                             plt.close()
                             continue
-                    elif chart_type == 'bar':  # Изменение: теперь bar может принимать 1 или 2 столбца
+                    elif chart_type == 'bar':  # Bar chart can take 1 or 2 columns
                         if len(columns) == 1:
                             col = columns[0]
-                            # Count unique values for single-column bar chart (frequency distribution)
+                            # For single-column bar chart (frequency distribution)
                             value_counts = plot_df[col].value_counts().nlargest(15)  # Top 15 categories
-                            sns.barplot(x=value_counts.index, y=value_counts.values)
-                            plt.xticks(rotation=45, ha='right')
-                            plt.ylabel('Частота')  # Добавлено название оси Y
+                            if not value_counts.empty:
+                                sns.barplot(x=value_counts.index, y=value_counts.values)
+                                plt.xticks(rotation=45, ha='right')
+                                plt.ylabel('Частота')  # Add Y-axis label for frequency
+                            else:
+                                logging.warning(
+                                    f"Недостаточно данных для построения столбчатой диаграммы частоты для '{col}'.")
+                                plt.close()
+                                continue
                         elif len(columns) == 2:
                             x_col, y_col = columns[0], columns[1]
                             # Attempt to convert y_col to numeric
@@ -199,15 +210,15 @@ def generate_visualizations(
                                     plt.xticks(rotation=45, ha='right')
                                 else:
                                     logging.warning(
-                                        f"Недостаточно данных для построения столбчатой диаграммы для '{x_col}' и '{y_col}' после очистки NaN.")
+                                        f"Недостаточно данных для построения столбчатой диаграммы агрегации для '{x_col}' и '{y_col}' после очистки NaN.")
                                     plt.close()
                                     continue
                             else:
                                 logging.warning(
-                                    f"Не удалось создать столбчатую диаграмму для '{y_col}': Столбец агрегации не является числовым после попытки преобразования.")
+                                    f"Не удалось создать столбчатую диаграмму агрегации для '{y_col}': Столбец агрегации не является числовым после попытки преобразования.")
                                 plt.close()
                                 continue
-                        else:  # Если количество столбцов не 1 и не 2
+                        else:  # If column count is not 1 or 2 for bar chart
                             logging.warning(
                                 f"Не удалось создать столбчатую диаграмму '{title}' для таблицы '{name}': Неверное количество столбцов ({len(columns)}). Ожидается 1 или 2.")
                             plt.close()
@@ -224,22 +235,24 @@ def generate_visualizations(
                             sns.scatterplot(plot_df.dropna(subset=[x_col, y_col]), x=x_col, y=y_col)
                         else:
                             logging.warning(
-                                f"Не удалось создать точечную диаграмму для '{x_col}' и '{y_col}': Один или оба столбца не являются числовыми после попытки преобразования.")
+                                f"Не удалось создать точечную диаграмму для '{x_col}' и '{y_col}': Один или оба "
+                                f"столбца не являются числовыми после попытки преобразования.")
                             plt.close()
                             continue
                     elif chart_type == 'pie' and len(columns) == 1:
                         col = columns[0]
                         # For pie, ensure the column is suitable (e.g., categorical or low unique values)
-                        if plot_df[
-                            col].nunique() <= 10:  # Re-check the nunique after potential conversion or for robustness
+                        if plot_df[col].nunique() <= 10 and not plot_df[
+                            col].empty:  # Re-check nunique and ensure not empty
                             plot_df[col].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, counterclock=False)
                             plt.ylabel('')  # Remove y-label for pie chart
                         else:
                             logging.warning(
-                                f"Не удалось создать круговую диаграмму для '{col}': Слишком много уникальных значений (>10).")
+                                f"Не удалось создать круговую диаграмму для '{col}': Слишком много уникальных "
+                                f"значений (>10) или столбец пуст.")
                             plt.close()
                             continue
-                    else:
+                    else:  # Fallback for unsupported chart types or invalid column counts
                         logging.warning(
                             f"Не удалось создать график '{title}' для таблицы '{name}': Неподдерживаемый тип графика ({chart_type}) или неверное количество столбцов ({len(columns)}).")
                         plt.close()
@@ -252,7 +265,8 @@ def generate_visualizations(
                     plt.savefig(buffer, format='png', bbox_inches='tight')
                     buffer.seek(0)
 
-                    s3_key = f"charts/{report_id}/{safe_name}_{i}.png"
+                    file_name_for_s3 = f"{urllib.parse.quote(name)}_{i}.png"
+                    s3_key = f"charts/{report_id}/{file_name_for_s3}"
 
                     config.s3_client.put_object(
                         Bucket=config.S3_BUCKET_NAME, Key=s3_key, Body=buffer, ContentType='image/png'
@@ -264,18 +278,20 @@ def generate_visualizations(
                     )
                     chart_urls.append(presigned_url)
                 except Exception as e:
-                    logging.error(f"Не удалось создать график '{title}': {e}", exc_info=True)
+                    logging.error(
+                        f"Не удалось создать график '{title}' (таблица: '{name}', тип: '{chart_type}', столбцы: {columns}): {e}",
+                        exc_info=True)
                 finally:
                     plt.close()  # Always close the plot to free memory
 
             if chart_urls:
                 visualizations[name] = chart_urls
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as jde:
             logging.error(
-                f"Не удалось распарсить JSON от OpenAI для '{name}'. Ответ: {response.choices[0].message.content}")
+                f"Не удалось распарсить JSON от OpenAI для '{name}'. Ответ: {response.choices[0].message.content}. Ошибка: {jde}")
         except Exception as e:
-            logging.error(f"Общая ошибка при генерации идей для графиков для '{name}': {e}")
+            logging.error(f"Общая ошибка при генерации идей для графиков для '{name}': {e}", exc_info=True)
 
     return visualizations
 
