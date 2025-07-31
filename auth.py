@@ -36,12 +36,13 @@ def verify_password(plain_password, hashed_password):
     return crud.pwd_context.verify(plain_password, hashed_password)
 
 
-# Проверяет пользователя в БД
 def authenticate_user(db: Session, email: str, password: str):
     user = crud.get_user_by_email(db, email=email)
     if not user:
         return None
     if not verify_password(password, user.hashed_password):
+        return None
+    if not user.is_verified:
         return None
     return user
 

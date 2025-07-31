@@ -14,6 +14,7 @@ import redis
 from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from langdetect import detect, LangDetectException
 from sqlalchemy.orm import Session
 from starlette import status
@@ -47,10 +48,22 @@ LANG_MAP = {
     'kz': 'казахском'
 }
 
+conf_mail = ConnectionConfig(
+    MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
+    MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
+    MAIL_PORT=587,
+    MAIL_SERVER="smtp.gmail.com",
+    MAIL_STARTTLS=True,
+    MAIL_SSL_TLS=False,
+    USE_CREDENTIALS=True,
+    VALIDATE_CERTS=True
+)
+
 client = openai.OpenAI(api_key=api_key)
 pc = pinecone.Pinecone(api_key=pinecone_key)
 app = FastAPI(title="SODA API")
 app.include_router(database_router, tags=["Database Analytics"])
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -67,11 +80,13 @@ async def startup_event():
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok"}
+
+
 allow_origin_regex = r"https://smart-frontend-production\.up\.railway\.app|http://localhost:5173|https?://(www\.)?soda\.contact"
 
 EMBEDDING_MODEL = "text-embedding-3-small"
-AGENT_MODEL = "o4-mini"
-CRITIC_MODEL = "o4-mini"
+AGENT_MODEL = "gpt-4.1-nano"
+CRITIC_MODEL = "gpt-4.1-nano"
 INDEX_NAME = "soda-index"
 BATCH_SIZE = 100
 
@@ -124,17 +139,65 @@ def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
 
 
 @user_router.post("/users/register", response_model=schemas.User)
-def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
+async def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Пользователь с таким email уже зарегистрирован")
-    return crud.create_user(db=db, user=user)
+
+    new_user = crud.create_user(db=db, user=user)
+
+    code = crud.create_verification_code(db, new_user)
+
+    message = MessageSchema(
+        subject="Подтверждение регистрации SODA",
+        recipients=[new_user.email],
+        body=f"Ваш код подтверждения: {code}. Он действителен 15 минут.",
+        subtype="plain"
+    )
+
+    fm = FastMail(conf_mail)
+    await fm.send_message(message)
+
+    return new_user
 
 
-@user_router.post("/token")
+@user_router.post("/users/verify-email", summary="Подтверждение email по коду")
+async def verify_email(verification_data: schemas.EmailVerification, db: Session = Depends(database.get_db)):
+    user = crud.verify_email_code(db, verification_data.email, verification_data.code)
+    if not user:
+        raise HTTPException(status_code=400, detail="Неверный email или код подтверждения.")
+    return {"message": "Email успешно подтвержден."}
+
+
+@user_router.post("/users/password-reset/request", summary="Запрос на сброс пароля")
+async def request_password_reset(request_data: schemas.PasswordResetRequest, db: Session = Depends(database.get_db)):
+    user = crud.get_user_by_email(db, request_data.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден.")
+
+    token = crud.create_password_reset_token(db, user)
+    reset_link = f"http://www.soda.contact/reset-password?token={token}"  # Замените на реальный URL
+
+    message = MessageSchema(
+        subject="Сброс пароля SODA",
+        recipients=[user.email],
+        body=f"Для сброса пароля перейдите по ссылке: {reset_link}",
+        subtype="plain"
+    )
+
+    fm = FastMail(conf_mail)
+    await fm.send_message(message)
+
+    return {"message": "Инструкции по сбросу пароля отправлены на ваш email."}
+
+@app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
     user = auth.authenticate_user(db, email=form_data.username, password=form_data.password)
     if not user:
+        db_user = crud.get_user_by_email(db, form_data.username)
+        if db_user and not db_user.is_verified:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email не подтвержден. Проверьте почту.",
+                                headers={"WWW-Authenticate": "Bearer"})
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный email или пароль",
                             headers={"WWW-Authenticate": "Bearer"})
     access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)

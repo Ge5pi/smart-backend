@@ -31,6 +31,7 @@ class UserCreate(UserBase):
 class User(UserBase):
     id: int
     is_active: bool
+    is_verified: bool
     files: list[File] = []
 
     class Config:
@@ -59,3 +60,22 @@ class Report(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class EmailVerificationRequest(BaseModel):
+    email: str
+
+
+class EmailVerification(BaseModel):
+    email: str
+    code: str
+
+
+# Схемы для сброса пароля
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordReset(BaseModel):
+    token: str
+    new_password: str

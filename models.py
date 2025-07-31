@@ -10,6 +10,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
     files = relationship("File", back_populates="owner")
     connections = relationship("DatabaseConnection", back_populates="user")
     reports = relationship("Report", back_populates="user")
@@ -50,3 +51,19 @@ class Report(Base):
 
     user = relationship("User", back_populates="reports")
     connection = relationship("DatabaseConnection")
+
+
+class EmailVerificationCode(Base):
+    __tablename__ = "email_verification_codes"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+    code = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    token = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
