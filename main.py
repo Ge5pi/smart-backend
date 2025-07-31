@@ -215,9 +215,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     user = auth.authenticate_user(db, email=form_data.username, password=form_data.password)
     if not user:
         db_user = crud.get_user_by_email(db, form_data.username)
-        if db_user and not (db_user.is_verified or db_user.is_active):
+        if db_user and not db_user.is_verified:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email не подтвержден. Проверьте почту.",
                                 headers={"WWW-Authenticate": "Bearer"})
+        elif db_user and not db_user.is_active:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Запросите подтверждение у администратора.",
+                                headers={"WWW-authenticate": "Bearer"})
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный email или пароль",
                             headers={"WWW-Authenticate": "Bearer"})
     access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
