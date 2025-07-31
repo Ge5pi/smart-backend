@@ -191,6 +191,25 @@ async def request_password_reset(request_data: schemas.PasswordResetRequest, db:
 
     return {"message": "Инструкции по сбросу пароля отправлены на ваш email."}
 
+
+@user_router.post("/users/password-reset", summary="Подтверждение сброса пароля")
+async def confirm_password_reset(
+    reset_data: schemas.PasswordReset,
+    db: Session = Depends(database.get_db)
+):
+    """
+    Завершает процесс сброса пароля, используя токен и новый пароль.
+    """
+    success = crud.reset_user_password(
+        db, token=reset_data.token, new_password=reset_data.new_password
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный, просроченный или уже использованный токен."
+        )
+    return {"message": "Пароль успешно обновлен."}
+
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
     user = auth.authenticate_user(db, email=form_data.username, password=form_data.password)
