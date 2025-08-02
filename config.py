@@ -1,10 +1,18 @@
+import json
 import os
 
-import boto3
 from dotenv import load_dotenv
 import redis
+from google.cloud import storage
+from google.oauth2 import service_account
 # Загружаем переменные окружения из .env файла
 load_dotenv()
+
+
+creds_info = json.loads(os.getenv("GCP_CREDENTIALS_JSON"))
+credentials = service_account.Credentials.from_service_account_info(creds_info)
+storage_client = storage.Client(credentials=credentials)
+gcs_bucket = storage_client.bucket(os.getenv("GCP_BUCKET_NAME"))
 
 # AWS
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -28,12 +36,7 @@ API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_KEY = os.getenv("PINECONE_API_KEY")
 
 enc = os.getenv("ENCRYPTION_KEY")
-s3_client = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_DEFAULT_REGION
-    )
+
 ENCRYPTION_KEY = enc.encode('utf-8')
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=15)
 # Проверка, что ключевые переменные установлены

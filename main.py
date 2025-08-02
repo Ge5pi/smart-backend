@@ -5,7 +5,6 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
-import boto3
 import numpy as np
 import openai
 import pandas as pd
@@ -30,7 +29,7 @@ import crud
 import database
 import models
 import schemas
-from config import API_KEY, PINECONE_KEY, redis_client, s3_client
+from config import API_KEY, PINECONE_KEY, redis_client
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
@@ -123,8 +122,8 @@ def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
         raise HTTPException(status_code=404, detail="File record not found in DB.")
 
     try:
-        obj = s3_client.get_object(Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
-        file_content = io.BytesIO(obj['Body'].read())
+        blob = config.gcs_bucket.blob(file_record.s3_path)
+        file_content = blob.download_as_bytes()
 
         file_extension = Path(file_record.file_name).suffix.lower()
         if file_extension == '.csv':
@@ -461,8 +460,8 @@ def save_dataframe_to_file(db: Session, file_id: str, df_to_save: pd.DataFrame) 
     try:
         with io.StringIO() as csv_buffer:
             df_to_save.to_csv(csv_buffer, index=False)
-            # Загружаем содержимое буфера в S3
-            s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
+            blob = config.gcs_bucket.blob(file_record.s3_path)
+            blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
         return f"Файл '{file_record.file_name}' успешно сохранен."
     except Exception as e:
         return f"Ошибка при сохранении файла в S3: {e}"
@@ -532,7 +531,8 @@ async def upload_file(
 
     try:
         contents = await file.read()
-        s3_client.put_object(Body=contents, Bucket=config.S3_BUCKET_NAME, Key=s3_path)
+        blob = config.gcs_bucket.blob(s3_path)
+        blob.upload_from_string(contents, content_type=file.content_type)
 
         db_file = crud.create_user_file(db=db, user_id=current_user.id, file_uid=file_id, file_name=original_filename,
                                         s3_path=s3_path)
@@ -704,9 +704,10 @@ async def impute_missing_values_endpoint(file_id: str = Form(...), columns: Opti
         file_record = crud.get_file_by_uid(db, file_id)
         with io.StringIO() as csv_buffer:
             df_imputed.to_csv(csv_buffer, index=False)
-            s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
+            blob = config.gcs_bucket.blob(file_record.s3_path)
+            blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Не удалось сохранить обработанный файл в S3: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить обработанный файл в GCS: {str(e)}")
 
     return {
         "processing_results": processing_results,
@@ -753,11 +754,12 @@ async def download_cleaned_file(file_id: str, db: Session = Depends(database.get
         raise HTTPException(status_code=404, detail="File record not found in DB.")
 
     try:
-        obj = s3_client.get_object(Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
+        blob = config.gcs_bucket.blob(file_record.s3_path)
+        content = blob.download_as_bytes()
         return Response(
-            content=obj['Body'].read(),
+            content=content,
             media_type='text/csv',
-            headers={"Content-Disposition": f'attachment; filename="{file_record.file_name}"'}
+            headers={"Content-Disposition": f'attachment; filename=\"{file_record.file_name}\"'}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch file from S3: {e}")
@@ -872,9 +874,10 @@ async def encode_categorical_features(
         file_record = crud.get_file_by_uid(db, file_id)
         with io.StringIO() as csv_buffer:
             df_encoded.to_csv(csv_buffer, index=False)
-            s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=config.S3_BUCKET_NAME, Key=file_record.s3_path)
+            blob = config.gcs_bucket.blob(file_record.s3_path)
+            blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save encoded file to S3: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить закодированный файл в GCS: {str(e)}")
 
     new_analysis = [{"column": col, "dtype": str(df_encoded[col].dtype), "nulls": int(df_encoded[col].isna().sum()),
                      "unique": int(df_encoded[col].nunique())} for col in df_encoded.columns]

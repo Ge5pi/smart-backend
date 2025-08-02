@@ -14,8 +14,6 @@ import urllib.parse
 
 client = OpenAI(api_key=API_KEY)
 
-S3_PRESIGNED_URL_EXPIRATION_ONE_YEAR = 365 * 24 * 60 * 60
-
 
 def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
     numeric_df = df.select_dtypes(include=np.number)
@@ -268,14 +266,11 @@ def generate_visualizations(
                     file_name_for_s3 = f"{urllib.parse.quote(name)}_{i}.png"
                     s3_key = f"charts/{report_id}/{file_name_for_s3}"
 
-                    config.s3_client.put_object(
-                        Bucket=config.S3_BUCKET_NAME, Key=s3_key, Body=buffer, ContentType='image/png'
-                    )
+                    blob = config.gcs_bucket.blob(s3_key)
+                    blob.upload_from_string(buffer.getvalue(), content_type='image/png')
 
-                    presigned_url = config.s3_client.generate_presigned_url(
-                        'get_object', Params={'Bucket': config.S3_BUCKET_NAME, 'Key': s3_key},
-                        ExpiresIn=604700
-                    )
+                    blob = config.gcs_bucket.blob(s3_key)
+                    presigned_url = blob.generate_signed_url(expiration=604800)
                     chart_urls.append(presigned_url)
                 except Exception as e:
                     logging.error(
