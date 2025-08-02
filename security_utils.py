@@ -2,7 +2,6 @@
 from cryptography.fernet import Fernet
 import config
 
-# Убедитесь, что ENCRYPTION_KEY определен в config.py
 try:
     fernet = Fernet(config.ENCRYPTION_KEY)
 except Exception as e:

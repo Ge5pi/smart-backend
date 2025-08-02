@@ -127,9 +127,9 @@ def get_df_from_s3(db: Session, file_id: str) -> pd.DataFrame:
 
         file_extension = Path(file_record.file_name).suffix.lower()
         if file_extension == '.csv':
-            return pd.read_csv(file_content)
+            return pd.read_csv(io.StringIO(file_content.decode("utf-8")))
         elif file_extension in ['.xlsx', '.xls']:
-            return pd.read_excel(file_content)
+            return pd.read_excel(io.BytesIO(file_content))
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type in S3.")
 
