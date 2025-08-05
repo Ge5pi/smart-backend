@@ -269,9 +269,8 @@ def generate_visualizations(
                     blob = config.gcs_bucket.blob(s3_key)
                     blob.upload_from_string(buffer.getvalue(), content_type='image/png')
 
-                    blob = config.gcs_bucket.blob(s3_key)
-                    presigned_url = blob.generate_signed_url(expiration=604800)
-                    chart_urls.append(presigned_url)
+                    api_url = f"{config.BASE_API_URL}/chart/{report_id}/{file_name_for_s3}"
+                    chart_urls.append(api_url)
                 except Exception as e:
                     logging.error(
                         f"Не удалось создать график '{title}' (таблица: '{name}', тип: '{chart_type}', столбцы: {columns}): {e}",

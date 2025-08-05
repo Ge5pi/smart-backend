@@ -9,7 +9,6 @@ import numpy as np
 import openai
 import pandas as pd
 import pinecone
-import redis
 from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -17,7 +16,7 @@ from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from langdetect import detect, LangDetectException
 from sqlalchemy.orm import Session
 from starlette import status
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 from sklearn.ensemble import IsolationForest
 from sklearn.impute import KNNImputer, SimpleImputer
 from tenacity import retry, wait_random_exponential, stop_after_attempt
@@ -889,6 +888,24 @@ async def encode_categorical_features(
         "preview": new_preview
     }
 
+
+@app.get("/chart/{report_id}/{filename}")
+def get_chart(report_id: int, filename: str):
+    s3_key = f"charts/{report_id}/{filename}"
+    blob = config.gcs_bucket.blob(s3_key)
+    content = blob.download_as_bytes()
+
+    # Определяем MIME-тип
+    if filename.lower().endswith(".png"):
+        media_type = "image/png"
+    elif filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
+        media_type = "image/jpeg"
+    elif filename.lower().endswith(".svg"):
+        media_type = "image/svg+xml"
+    else:
+        media_type = "application/octet-stream"
+
+    return StreamingResponse(io.BytesIO(content), media_type=media_type)
 
 @app.get("/preview/{file_id}", tags=["File Operations"])
 async def get_paginated_preview(

@@ -8,7 +8,7 @@ from google.oauth2 import service_account
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
-
+BASE_API_URL = os.getenv("BASE_API_URL", "https://smart-backend-production-30a7.up.railway.app")
 creds_info = json.loads(os.getenv("GCP_CREDENTIALS_JSON"))
 credentials = service_account.Credentials.from_service_account_info(creds_info)
 storage_client = storage.Client(credentials=credentials)
