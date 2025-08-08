@@ -34,7 +34,7 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
     )
 
     response = client.chat.completions.create(
-        model="gpt-4.1-nano",
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.4
     )
@@ -100,7 +100,7 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                 )
 
                 response = client.chat.completions.create(
-                    model="gpt-4.1-nano",
+                    model="gpt-5-mini",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5
                 )
@@ -125,14 +125,12 @@ def generate_visualizations(
             logging.warning(f"DataFrame для таблицы '{name}' пуст, графики не будут сгенерированы.")
             continue
 
-        # Prepare column info for GPT more explicitly, including types for better suggestions
         column_info = [
             {"name": col, "dtype": str(df[col].dtype), "nunique": df[col].nunique(),
              "is_numeric": pd.api.types.is_numeric_dtype(df[col])}
             for col in df.columns
         ]
 
-        # Обновленный промпт с уточнением для bar-графиков и явным указанием типов столбцов
         prompt = (
             f"Проанализируй DataFrame с названием '{name}' со следующими столбцами и их характеристиками: "
             f"{json.dumps(column_info)}. "
@@ -152,7 +150,7 @@ def generate_visualizations(
 
         try:
             response = client.chat.completions.create(
-                model="gpt-4.1-nano",
+                model="gpt-5-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 response_format={"type": "json_object"}
@@ -342,7 +340,6 @@ def cluster_data(df: pd.DataFrame, table_name: str, n_clusters: int = 3) -> dict
         )
         top_features = [f[0] for f in feature_importance[:5]]
 
-        # GPT-интерпретация
         prompt = (
             f"Мы провели кластеризацию таблицы '{table_name}' на {n_clusters} кластера(ов). "
             f"Размеры кластеров: {sizes}. "
@@ -354,7 +351,7 @@ def cluster_data(df: pd.DataFrame, table_name: str, n_clusters: int = 3) -> dict
 
         try:
             gpt_response = client.chat.completions.create(
-                model="gpt-4.1-nano",
+                model="gpt-5-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4
             )
@@ -399,7 +396,7 @@ def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> List[Dict
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
@@ -496,7 +493,7 @@ def perform_full_analysis(
             "Ответ на русском языке в виде Markdown с заголовками и подзаголовками."
         )
         response = client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
