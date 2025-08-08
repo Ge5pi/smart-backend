@@ -2,6 +2,8 @@ from typing import Dict, Any, Set, Tuple, List
 import pandas as pd
 import numpy as np
 import io
+
+from sklearn.ensemble import RandomForestClassifier
 from sqlalchemy.engine import Inspector
 from openai import OpenAI
 import logging
@@ -307,25 +309,70 @@ def generate_visualizations(
     return visualizations
 
 
-def cluster_data(df: pd.DataFrame, table_name: str) -> dict:
+def cluster_data(df: pd.DataFrame, table_name: str, n_clusters: int = 3) -> dict:
     numeric_df = df.select_dtypes(include=np.number).dropna()
     if numeric_df.shape[0] < 10 or numeric_df.shape[1] < 2:
         return {"message": "Недостаточно данных для кластеризации"}
 
     try:
+        # Стандартизация данных
         scaled = StandardScaler().fit_transform(numeric_df)
-        kmeans = KMeans(n_clusters=3, n_init="auto")
+
+        # KMeans кластеризация
+        kmeans = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
         kmeans.fit(scaled)
 
-        df["cluster"] = kmeans.labels_
-        centers = kmeans.cluster_centers_
+        # Размеры кластеров
+        sizes = pd.Series(kmeans.labels_).value_counts().sort_index().to_dict()
+
+        # Профили кластеров
+        cluster_profiles_df = numeric_df.copy()
+        cluster_profiles_df["cluster"] = kmeans.labels_
+        profiles = (
+            cluster_profiles_df.groupby("cluster").mean().round(3).to_dict()
+        )
+
+        rf = RandomForestClassifier(random_state=42)
+        rf.fit(scaled, kmeans.labels_)
+        importances = rf.feature_importances_
+        feature_importance = sorted(
+            zip(numeric_df.columns, importances),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        top_features = [f[0] for f in feature_importance[:5]]
+
+        # GPT-интерпретация
+        prompt = (
+            f"Мы провели кластеризацию таблицы '{table_name}' на {n_clusters} кластера(ов). "
+            f"Размеры кластеров: {sizes}. "
+            f"Вот средние значения признаков по кластерам: {json.dumps(profiles, ensure_ascii=False)}. "
+            f"Важнейшие признаки для разделения: {top_features}. "
+            "Дай понятное описание каждого кластера и предложи, что это могут быть за группы. "
+            "Ответь кратко, на русском, в Markdown."
+        )
+
+        try:
+            gpt_response = client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4
+            )
+            gpt_summary = gpt_response.choices[0].message.content
+        except Exception as e:
+            logging.warning(f"Ошибка GPT при описании кластеров: {e}")
+            gpt_summary = None
 
         return {
-            "clusters_count": 3,
-            "feature_count": numeric_df.shape[1],
+            "clusters_count": n_clusters,
             "sample_count": numeric_df.shape[0],
-            "cluster_centers": centers.tolist()
+            "feature_count": numeric_df.shape[1],
+            "sizes": sizes,
+            "cluster_profiles": profiles,
+            "important_features": top_features,
+            "gpt_summary": gpt_summary
         }
+
     except Exception as e:
         return {"error": str(e)}
 
