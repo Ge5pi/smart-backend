@@ -1,4 +1,4 @@
-from typing import Dict, Any, Set, Tuple
+from typing import Dict, Any, Set, Tuple, List
 import pandas as pd
 import numpy as np
 import io
@@ -330,63 +330,88 @@ def cluster_data(df: pd.DataFrame, table_name: str) -> dict:
         return {"error": str(e)}
 
 
-def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> list[dict]:
+def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> List[Dict[str, Any]]:
     hypotheses_results = []
 
+    # Минимальные данные для проверки
     if df.shape[1] < 2:
+        logging.info(f"Таблица {table_name}: слишком мало колонок для генерации гипотез.")
         return []
 
-    stats = df.describe(include='all').replace({np.nan: None}).to_json()
+    stats = df.describe(include='all').replace({pd.NA: None}).to_json()
     columns_info = [{"name": col, "dtype": str(df[col].dtype)} for col in df.columns]
 
     prompt = (
         f"Вот DataFrame из таблицы '{table_name}', вот его статистика: {stats}. "
         f"Вот столбцы: {columns_info}. "
-        "Сформулируй 2 гипотезы, которые можно проверить статистически, и укажи, по каким столбцам их проверять. "
-        "Ответ должен быть JSON: [{\"hypothesis\": \"...\", \"test\": \"t-test\" или \"chi2\", \"columns\": ["
-        "\"col1\", \"col2\"]}, ...] "
+        "Сформулируй 2 гипотезы, которые можно проверить статистически, "
+        "и укажи, по каким столбцам их проверять. "
+        "Ответь строго в формате JSON массива объектов, без лишнего текста: "
+        "[{\"hypothesis\": \"...\", \"test\": \"t-test\" или \"chi2\", \"columns\": [\"col1\", \"col2\"]}]."
     )
 
     try:
         response = client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            response_format={"type": "json_object"}
+            temperature=0.3
         )
 
-        hypothesis_list = json.loads(response.choices[0].message.content)
+        raw_output = response.choices[0].message.content.strip()
+        logging.debug(f"GPT hypothesis raw output for {table_name}: {raw_output}")
 
-        for item in hypothesis_list:
-            hypothesis = item["hypothesis"]
-            test = item["test"]
-            cols = item["columns"]
+        try:
+            parsed = json.loads(raw_output)
+        except json.JSONDecodeError as e:
+            logging.warning(f"Не удалось распарсить JSON гипотез для {table_name}: {e}")
+            return []
+
+        if not isinstance(parsed, list):
+            logging.warning(f"Неверный формат ответа GPT для {table_name}, ожидался список: {parsed}")
+            return []
+
+        for item in parsed:
+            if not isinstance(item, dict):
+                logging.warning(f"Неверный элемент в списке гипотез для {table_name}: {item}")
+                continue
+
+            hypothesis = item.get("hypothesis", "").strip()
+            test = item.get("test", "").strip().lower()
+            cols = item.get("columns", [])
+
+            if not hypothesis or not test or not isinstance(cols, list) or len(cols) < 2:
+                logging.warning(f"Неполная гипотеза для {table_name}: {item}")
+                continue
 
             explanation = ""
             p_value = None
             result = "не удалось проверить"
 
             try:
-                if test == "t-test" and len(cols) == 2:
-                    group_col, value_col = cols
-                    groups = df[group_col].dropna().unique()
-                    if len(groups) == 2:
-                        a = df[df[group_col] == groups[0]][value_col].dropna()
-                        b = df[df[group_col] == groups[1]][value_col].dropna()
-                        stat, p = ttest_ind(a, b)
-                        result = "подтверждена" if p < 0.05 else "опровергнута"
-                        p_value = round(float(p), 5)
-                        explanation = f"t-test между {groups[0]} и {groups[1]} по {value_col}"
-
-                elif test == "chi2" and len(cols) == 2:
-                    contingency = pd.crosstab(df[cols[0]], df[cols[1]])
-                    stat, p, *_ = chi2_contingency(contingency)
-                    result = "подтверждена" if p < 0.05 else "опровергнута"
-                    p_value = round(float(p), 5)
-                    explanation = f"chi2 между {cols[0]} и {cols[1]}"
-
+                if test == "t-test":
+                    group_col, value_col = cols[0], cols[1]
+                    if group_col in df.columns and value_col in df.columns:
+                        groups = df[group_col].dropna().unique()
+                        if len(groups) == 2:
+                            a = df[df[group_col] == groups[0]][value_col].dropna()
+                            b = df[df[group_col] == groups[1]][value_col].dropna()
+                            if len(a) > 1 and len(b) > 1:
+                                stat, p = ttest_ind(a, b)
+                                result = "подтверждена" if p < 0.05 else "опровергнута"
+                                p_value = round(float(p), 5)
+                                explanation = f"t-test между {groups[0]} и {groups[1]} по {value_col}"
+                elif test == "chi2":
+                    col_a, col_b = cols[0], cols[1]
+                    if col_a in df.columns and col_b in df.columns:
+                        contingency = pd.crosstab(df[col_a], df[col_b])
+                        if contingency.shape[0] > 1 and contingency.shape[1] > 1:
+                            stat, p, *_ = chi2_contingency(contingency)
+                            result = "подтверждена" if p < 0.05 else "опровергнута"
+                            p_value = round(float(p), 5)
+                            explanation = f"chi2 между {col_a} и {col_b}"
             except Exception as e:
                 explanation = f"Ошибка при проверке: {e}"
+                logging.warning(f"Ошибка при проверке гипотезы {hypothesis} в {table_name}: {e}")
 
             hypotheses_results.append({
                 "hypothesis": hypothesis,
