@@ -1,4 +1,4 @@
-from typing import Dict, Any, Set, Tuple, List
+from typing import Dict, Any, Set, Tuple
 import pandas as pd
 import numpy as np
 import io
@@ -11,6 +11,9 @@ import seaborn as sns
 import config
 from config import API_KEY
 import urllib.parse
+from scipy.stats import ttest_ind, chi2_contingency
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
 client = OpenAI(api_key=API_KEY)
 
@@ -85,7 +88,8 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                 corr = analysis_result["correlations"]
 
                 prompt = (
-                    f"Проанализируй СВЯЗЬ между таблицами '{left_table}' и '{right_table}', которые были объединены по ключам "
+                    f"Проанализируй СВЯЗЬ между таблицами '{left_table}' и '{right_table}', которые были объединены "
+                    f"по ключам "
                     f"({left_table}.{','.join(left_on)} = {right_table}.{','.join(right_on)}). "
                     f"Вот статистика объединенных данных: {stats}. "
                     f"Вот матрица корреляций: {json.dumps(corr)}. "
@@ -128,13 +132,20 @@ def generate_visualizations(
 
         # Обновленный промпт с уточнением для bar-графиков и явным указанием типов столбцов
         prompt = (
-            f"Проанализируй DataFrame с названием '{name}' со следующими столбцами и их характеристиками: {json.dumps(column_info)}. "
+            f"Проанализируй DataFrame с названием '{name}' со следующими столбцами и их характеристиками: "
+            f"{json.dumps(column_info)}. "
             "Предложи до 2 наиболее подходящих визуализаций для анализа этих данных. "
             "Ответ предоставь в виде JSON-объекта с ключом 'charts', который содержит массив предложений. "
             "Каждый объект в массиве должен содержать: 'chart_type' ('hist', 'bar', 'scatter', 'pie'), "
-            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА). Для 'bar' графика: если это распределение по одной категории (частота), используй 1 столбец; если это агрегированное значение по категории (например, сумма), используй 2 столбца (категория, числовой показатель). И 'title' (название графика на русском). "
-            "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 уникальных значений. "
-            "Пример: {{\"charts\": [{{\"chart_type\": \"bar\", \"columns\": [\"col1\"], \"title\": \"Пример распределения\"}}, {{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример суммы\"}}]}}"
+            "'columns' (СПИСОК СУЩЕСТВУЮЩИХ СТОЛБЦОВ, ВЫБРАННЫХ ИЗ ПРЕДОСТАВЛЕННОГО СПИСКА). Для 'bar' графика: если "
+            "это распределение по одной категории (частота), используй 1 столбец; если это агрегированное значение по "
+            "категории (например, сумма), используй 2 столбца (категория, числовой показатель). И 'title' (название "
+            "графика на русском). "
+            "Выбирай столбцы с умом. Не предлагай scatter если нет двух числовых колонок или pie для колонок с >10 "
+            "уникальных значений. "
+            "Пример: {{\"charts\": [{{\"chart_type\": \"bar\", \"columns\": [\"col1\"], \"title\": \"Пример "
+            "распределения\"}}, {{\"chart_type\": \"bar\", \"columns\": [\"col1\", \"col2\"], \"title\": \"Пример "
+            "суммы\"}}]}} "
         )
 
         try:
@@ -161,7 +172,8 @@ def generate_visualizations(
                 # Ensure all proposed columns exist in the DataFrame
                 if not all(col in df.columns for col in columns):
                     logging.warning(
-                        f"Не удалось создать график '{title}' для таблицы '{name}': Один или несколько предложенных столбцов ({', '.join(columns)}) не найдены в DataFrame.")
+                        f"Не удалось создать график '{title}' для таблицы '{name}': Один или несколько предложенных "
+                        f"столбцов ({', '.join(columns)}) не найдены в DataFrame.")
                     plt.close()  # Important to close the figure
                     continue
 
@@ -177,7 +189,8 @@ def generate_visualizations(
                             sns.histplot(plot_df.dropna(subset=[col]), x=col, kde=True)
                         else:
                             logging.warning(
-                                f"Не удалось создать гистограмму для '{col}': Столбец не является числовым после попытки преобразования.")
+                                f"Не удалось создать гистограмму для '{col}': Столбец не является числовым после "
+                                f"попытки преобразования.")
                             plt.close()
                             continue
                     elif chart_type == 'bar':  # Bar chart can take 1 or 2 columns
@@ -208,17 +221,20 @@ def generate_visualizations(
                                     plt.xticks(rotation=45, ha='right')
                                 else:
                                     logging.warning(
-                                        f"Недостаточно данных для построения столбчатой диаграммы агрегации для '{x_col}' и '{y_col}' после очистки NaN.")
+                                        f"Недостаточно данных для построения столбчатой диаграммы агрегации для "
+                                        f"'{x_col}' и '{y_col}' после очистки NaN.")
                                     plt.close()
                                     continue
                             else:
                                 logging.warning(
-                                    f"Не удалось создать столбчатую диаграмму агрегации для '{y_col}': Столбец агрегации не является числовым после попытки преобразования.")
+                                    f"Не удалось создать столбчатую диаграмму агрегации для '{y_col}': Столбец "
+                                    f"агрегации не является числовым после попытки преобразования.")
                                 plt.close()
                                 continue
                         else:  # If column count is not 1 or 2 for bar chart
                             logging.warning(
-                                f"Не удалось создать столбчатую диаграмму '{title}' для таблицы '{name}': Неверное количество столбцов ({len(columns)}). Ожидается 1 или 2.")
+                                f"Не удалось создать столбчатую диаграмму '{title}' для таблицы '{name}': Неверное "
+                                f"количество столбцов ({len(columns)}). Ожидается 1 или 2.")
                             plt.close()
                             continue
                     elif chart_type == 'scatter' and len(columns) == 2:
@@ -240,8 +256,7 @@ def generate_visualizations(
                     elif chart_type == 'pie' and len(columns) == 1:
                         col = columns[0]
                         # For pie, ensure the column is suitable (e.g., categorical or low unique values)
-                        if plot_df[col].nunique() <= 10 and not plot_df[
-                            col].empty:  # Re-check nunique and ensure not empty
+                        if plot_df[col].nunique() <= 10 and not plot_df[col].empty:
                             plot_df[col].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, counterclock=False)
                             plt.ylabel('')  # Remove y-label for pie chart
                         else:
@@ -252,7 +267,8 @@ def generate_visualizations(
                             continue
                     else:  # Fallback for unsupported chart types or invalid column counts
                         logging.warning(
-                            f"Не удалось создать график '{title}' для таблицы '{name}': Неподдерживаемый тип графика ({chart_type}) или неверное количество столбцов ({len(columns)}).")
+                            f"Не удалось создать график '{title}' для таблицы '{name}': Неподдерживаемый тип графика"
+                            f" ({chart_type}) или неверное количество столбцов ({len(columns)}).")
                         plt.close()
                         continue
 
@@ -283,11 +299,108 @@ def generate_visualizations(
 
         except json.JSONDecodeError as jde:
             logging.error(
-                f"Не удалось распарсить JSON от OpenAI для '{name}'. Ответ: {response.choices[0].message.content}. Ошибка: {jde}")
+                f"Не удалось распарсить JSON от OpenAI для '{name}'. Ответ: {response.choices[0].message.content}. "
+                f"Ошибка: {jde}")
         except Exception as e:
             logging.error(f"Общая ошибка при генерации идей для графиков для '{name}': {e}", exc_info=True)
 
     return visualizations
+
+
+def cluster_data(df: pd.DataFrame, table_name: str) -> dict:
+    numeric_df = df.select_dtypes(include=np.number).dropna()
+    if numeric_df.shape[0] < 10 or numeric_df.shape[1] < 2:
+        return {"message": "Недостаточно данных для кластеризации"}
+
+    try:
+        scaled = StandardScaler().fit_transform(numeric_df)
+        kmeans = KMeans(n_clusters=3, n_init="auto")
+        kmeans.fit(scaled)
+
+        df["cluster"] = kmeans.labels_
+        centers = kmeans.cluster_centers_
+
+        return {
+            "clusters_count": 3,
+            "feature_count": numeric_df.shape[1],
+            "sample_count": numeric_df.shape[0],
+            "cluster_centers": centers.tolist()
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> list[dict]:
+    hypotheses_results = []
+
+    if df.shape[1] < 2:
+        return []
+
+    stats = df.describe(include='all').replace({np.nan: None}).to_json()
+    columns_info = [{"name": col, "dtype": str(df[col].dtype)} for col in df.columns]
+
+    prompt = (
+        f"Вот DataFrame из таблицы '{table_name}', вот его статистика: {stats}. "
+        f"Вот столбцы: {columns_info}. "
+        "Сформулируй 2 гипотезы, которые можно проверить статистически, и укажи, по каким столбцам их проверять. "
+        "Ответ должен быть JSON: [{\"hypothesis\": \"...\", \"test\": \"t-test\" или \"chi2\", \"columns\": ["
+        "\"col1\", \"col2\"]}, ...] "
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+
+        hypothesis_list = json.loads(response.choices[0].message.content)
+
+        for item in hypothesis_list:
+            hypothesis = item["hypothesis"]
+            test = item["test"]
+            cols = item["columns"]
+
+            explanation = ""
+            p_value = None
+            result = "не удалось проверить"
+
+            try:
+                if test == "t-test" and len(cols) == 2:
+                    group_col, value_col = cols
+                    groups = df[group_col].dropna().unique()
+                    if len(groups) == 2:
+                        a = df[df[group_col] == groups[0]][value_col].dropna()
+                        b = df[df[group_col] == groups[1]][value_col].dropna()
+                        stat, p = ttest_ind(a, b)
+                        result = "подтверждена" if p < 0.05 else "опровергнута"
+                        p_value = round(float(p), 5)
+                        explanation = f"t-test между {groups[0]} и {groups[1]} по {value_col}"
+
+                elif test == "chi2" and len(cols) == 2:
+                    contingency = pd.crosstab(df[cols[0]], df[cols[1]])
+                    stat, p, *_ = chi2_contingency(contingency)
+                    result = "подтверждена" if p < 0.05 else "опровергнута"
+                    p_value = round(float(p), 5)
+                    explanation = f"chi2 между {cols[0]} и {cols[1]}"
+
+            except Exception as e:
+                explanation = f"Ошибка при проверке: {e}"
+
+            hypotheses_results.append({
+                "hypothesis": hypothesis,
+                "test": test,
+                "columns": cols,
+                "p_value": p_value,
+                "result": result,
+                "explanation": explanation
+            })
+
+    except Exception as e:
+        logging.warning(f"Не удалось сгенерировать или проверить гипотезы для {table_name}: {e}")
+
+    return hypotheses_results
 
 
 def perform_full_analysis(
@@ -300,14 +413,45 @@ def perform_full_analysis(
     joint_table_analysis = analyze_joins(inspector, dataframes)
     visualizations = generate_visualizations(dataframes.copy(), report_id)
 
+    def generate_overall_summary(dataframes: Dict[str, pd.DataFrame], insights: Dict[str, Any],
+                                 joins: Dict[str, Any]) -> str:
+        prompt = (
+            f"Ты получил данные из реляционной базы данных с таблицами: {list(dataframes.keys())}. "
+            f"Вот ключевые инсайты по отдельным таблицам: {json.dumps(insights, ensure_ascii=False)[:5000]}. "
+            f"Вот связи между таблицами: {json.dumps(joins, ensure_ascii=False)[:3000]}. "
+            "Сделай общий аналитический обзор всей базы: обрати внимание на тренды, связи, аномалии, повторяющиеся "
+            "паттерны. "
+            "Ответ на русском языке в виде Markdown с заголовками и подзаголовками."
+        )
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+
     def clean_nan(obj):
-        if isinstance(obj, dict): return {k: clean_nan(v) for k, v in obj.items()}
-        if isinstance(obj, list): return [clean_nan(item) for item in obj]
-        if isinstance(obj, float) and np.isnan(obj): return None
+        if isinstance(obj, dict):
+            return {k: clean_nan(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [clean_nan(item) for item in obj]
+        if isinstance(obj, float) and np.isnan(obj):
+            return None
         return obj
+
+    hypotheses_by_table = {}
+    for table, df in dataframes.items():
+        hypotheses_by_table[table] = generate_and_test_hypotheses(df, table)
+
+    clusters_by_table = {}
+    for table, df in dataframes.items():
+        clusters_by_table[table] = cluster_data(df, table)
 
     return clean_nan({
         "single_table_insights": single_table_analysis,
         "joint_table_insights": joint_table_analysis,
-        "visualizations": visualizations
+        "visualizations": visualizations,
+        "overall_summary": generate_overall_summary(dataframes, single_table_analysis, joint_table_analysis),
+        "hypotheses": hypotheses_by_table,
+        "clusters": clusters_by_table
     })
