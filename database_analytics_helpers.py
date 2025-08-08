@@ -35,8 +35,7 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
 
     response = client.chat.completions.create(
         model="gpt-5-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4
+        messages=[{"role": "user", "content": prompt}]
     )
     insight = response.choices[0].message.content
     return {"insight": insight, "correlations": corr}
@@ -101,8 +100,7 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
 
                 response = client.chat.completions.create(
                     model="gpt-5-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.5
+                    messages=[{"role": "user", "content": prompt}]
                 )
 
                 analysis_result["insight"] = response.choices[0].message.content
@@ -152,7 +150,6 @@ def generate_visualizations(
             response = client.chat.completions.create(
                 model="gpt-5-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
                 response_format={"type": "json_object"}
             )
             response_data = json.loads(response.choices[0].message.content)
@@ -352,8 +349,7 @@ def cluster_data(df: pd.DataFrame, table_name: str, n_clusters: int = 3) -> dict
         try:
             gpt_response = client.chat.completions.create(
                 model="gpt-5-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.4
+                messages=[{"role": "user", "content": prompt}]
             )
             gpt_summary = gpt_response.choices[0].message.content
         except Exception as e:
@@ -397,8 +393,7 @@ def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> List[Dict
     try:
         response = client.chat.completions.create(
             model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            messages=[{"role": "user", "content": prompt}]
         )
 
         raw_output = response.choices[0].message.content.strip()
@@ -494,8 +489,7 @@ def perform_full_analysis(
         )
         response = client.chat.completions.create(
             model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
 
