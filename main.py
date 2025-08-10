@@ -192,8 +192,8 @@ async def request_password_reset(request_data: schemas.PasswordResetRequest, db:
 
 @user_router.post("/users/password-reset", summary="Подтверждение сброса пароля")
 async def confirm_password_reset(
-    reset_data: schemas.PasswordReset,
-    db: Session = Depends(database.get_db)
+        reset_data: schemas.PasswordReset,
+        db: Session = Depends(database.get_db)
 ):
     """
     Завершает процесс сброса пароля, используя токен и новый пароль.
@@ -208,16 +208,19 @@ async def confirm_password_reset(
         )
     return {"message": "Пароль успешно обновлен."}
 
+
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
     user = auth.authenticate_user(db, email=form_data.username, password=form_data.password)
     if not user:
         db_user = crud.get_user_by_email(db, form_data.username)
         if db_user and not db_user.is_verified:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email не подтвержден. Проверьте почту.",
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Email не подтвержден. Проверьте почту.",
                                 headers={"WWW-Authenticate": "Bearer"})
         elif db_user and not db_user.is_active:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Запросите подтверждение у администратора.",
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Запросите подтверждение у администратора.",
                                 headers={"WWW-authenticate": "Bearer"})
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный email или пароль",
                             headers={"WWW-Authenticate": "Bearer"})
@@ -232,11 +235,13 @@ def read_user_files(db: Session = Depends(database.get_db),
     return crud.get_files_by_user_id(db=db, user_id=current_user.id)
 
 
-app.include_router(user_router, tags=["Users"])
-
 @user_router.get("/users/me", response_model=schemas.User)
 async def read_users_me(current_user: models.User = Depends(auth.get_current_active_user)):
     return current_user
+
+
+app.include_router(user_router, tags=["Users"])
+
 
 @app.post("/sessions/start")
 async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),
@@ -917,6 +922,7 @@ def get_chart(report_id: int, filename: str):
         media_type = "application/octet-stream"
 
     return StreamingResponse(io.BytesIO(content), media_type=media_type)
+
 
 @app.get("/preview/{file_id}", tags=["File Operations"])
 async def get_paginated_preview(
