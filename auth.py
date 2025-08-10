@@ -44,8 +44,6 @@ def authenticate_user(db: Session, email: str, password: str):
         return None
     if not user.is_verified:
         return None
-    if not user.is_active:
-        return None
     return user
 
 
