@@ -23,7 +23,7 @@ async def analyze_database(
         dbType: str = Form(...),
         alias: str = Form(...),
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user())
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     if (not current_user.is_active) and current_user.reports_used >= REPORT_LIMIT:
         raise HTTPException(
