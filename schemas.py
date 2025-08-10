@@ -33,6 +33,8 @@ class User(UserBase):
     is_active: bool
     is_verified: bool
     files: list[File] = []
+    messages_used: int
+    reports_used: int
 
     class Config:
         from_attributes = True

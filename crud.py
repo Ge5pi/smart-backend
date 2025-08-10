@@ -184,3 +184,19 @@ def reset_user_password(db: Session, token: str, new_password: str) -> bool:
     db.query(models.PasswordResetToken).filter(models.PasswordResetToken.token == token).delete()
     db.commit()
     return True
+
+
+def increment_usage_counter(db: Session, user: models.User, counter_type: str):
+    """
+    Увеличивает счетчик использования сообщений или отчетов для пользователя.
+    counter_type может быть 'messages' или 'reports'.
+    """
+    if counter_type == 'messages':
+        user.messages_used += 1
+    elif counter_type == 'reports':
+        user.reports_used += 1
+    else:
+        return
+
+    db.commit()
+    db.refresh(user)

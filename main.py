@@ -33,6 +33,9 @@ from config import API_KEY, PINECONE_KEY, redis_client
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
 
+MESSAGE_LIMIT = 10
+REPORT_LIMIT = 1
+
 try:
 
     print("--- Successfully connected to Redis ---")
@@ -233,6 +236,10 @@ def read_user_files(db: Session = Depends(database.get_db),
 
 
 app.include_router(user_router, tags=["Users"])
+
+@user_router.get("/users/me", response_model=schemas.User)
+async def read_users_me(current_user: models.User = Depends(auth.get_current_active_user)):
+    return current_user
 
 @app.post("/sessions/start")
 async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),
@@ -574,7 +581,13 @@ async def upload_file(
 
 
 @app.post("/sessions/ask", tags=["AI Agent"])
-async def session_ask(session_id: str = Form(...), query: str = Form(...), db: Session = Depends(database.get_db)):
+async def session_ask(session_id: str = Form(...), query: str = Form(...), db: Session = Depends(database.get_db),
+                      current_user: models.User = Depends(auth.get_current_active_user)):
+    if (not current_user.is_active) and current_user.messages_used >= MESSAGE_LIMIT:
+        raise HTTPException(
+            status_code=403,
+            detail="Вы использовали все бесплатные сообщения. Пожалуйста, перейдите на платный тариф."
+        )
     session_data_json = redis_client.get(session_id)
     if not session_data_json:
         raise HTTPException(status_code=404, detail="Сессия не найдена или истекла.")
@@ -651,6 +664,7 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
             final_answer = refined_answer
             messages.append({"role": "assistant", "content": final_answer})
 
+        crud.increment_usage_counter(db, user=current_user, counter_type='messages')
         session_data["messages"] = messages
         redis_client.setex(session_id, timedelta(hours=2), json.dumps(session_data))
         return {"answer": final_answer, "evaluation": evaluation}

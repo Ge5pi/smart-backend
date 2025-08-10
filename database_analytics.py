@@ -14,6 +14,7 @@ import database
 import models
 import schemas
 from pdf_generator import generate_pdf_report
+from main import REPORT_LIMIT
 
 database_router = APIRouter(prefix="/analytics/database")
 
@@ -26,6 +27,12 @@ async def analyze_database(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(auth.get_current_active_user)
 ):
+    if (not current_user.is_active) and current_user.reports_used >= REPORT_LIMIT:
+        raise HTTPException(
+            status_code=403,
+            detail="Вы использовали все бесплатные генерации отчетов. Пожалуйста, перейдите на платный тариф."
+        )
+
     if dbType not in ['postgres', 'sqlserver']:
         raise HTTPException(status_code=400, detail="Неподдерживаемый тип базы данных.")
 
@@ -35,6 +42,7 @@ async def analyze_database(
     report = crud.create_report(db, user_id=current_user.id, connection_id=connection.id, status="queued")
     logging.warning(f"Отчет ID:{report.id} добавлен в очередь.")
 
+    crud.increment_usage_counter(db, user=current_user, counter_type='reports')
     run_db_analysis_task.delay(
         report_id=report.id,
         user_id=current_user.id,

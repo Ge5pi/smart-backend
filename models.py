@@ -11,6 +11,8 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=False)
     is_verified = Column(Boolean, default=False)
+    messages_used = Column(Integer, default=0)
+    reports_used = Column(Integer, default=0)
     files = relationship("File", back_populates="owner")
     connections = relationship("DatabaseConnection", back_populates="user")
     reports = relationship("Report", back_populates="user")
