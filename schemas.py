@@ -2,13 +2,16 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional
 
+
 # --- Схемы для Файлов ---
 class FileBase(BaseModel):
     file_uid: str
     file_name: str
 
+
 class FileCreate(FileBase):
     pass
+
 
 class File(FileBase):
     id: int
@@ -18,12 +21,15 @@ class File(FileBase):
     class Config:
         from_attributes = True
 
+
 # --- Схемы для Пользователей ---
 class UserBase(BaseModel):
     email: str
 
+
 class UserCreate(UserBase):
     password: str
+
 
 class User(UserBase):
     id: int
@@ -36,10 +42,12 @@ class User(UserBase):
     class Config:
         from_attributes = True
 
+
 # --- Схемы для Чатов ---
 class ChatMessageBase(BaseModel):
     role: str
     content: str
+
 
 class ChatMessage(ChatMessageBase):
     id: int
@@ -48,6 +56,7 @@ class ChatMessage(ChatMessageBase):
 
     class Config:
         from_attributes = True
+
 
 class ChatSessionInfo(BaseModel):
     id: str
@@ -59,23 +68,29 @@ class ChatSessionInfo(BaseModel):
     class Config:
         from_attributes = True
 
+
 class HistoryResponse(BaseModel):
     history: List[ChatMessage]
 
+
 class SessionCreate(BaseModel):
     file_id: str
+
 
 # --- Схемы для Аутентификации и Авторизации ---
 class EmailVerification(BaseModel):
     email: str
     code: str
 
+
 class PasswordResetRequest(BaseModel):
     email: str
+
 
 class PasswordReset(BaseModel):
     token: str
     new_password: str
+
 
 # --- Схемы для Подключений к БД и Отчетов ---
 class DatabaseConnection(BaseModel):
@@ -89,6 +104,7 @@ class DatabaseConnection(BaseModel):
     class Config:
         from_attributes = True
 
+
 class Report(BaseModel):
     id: int
     user_id: int
@@ -100,9 +116,11 @@ class Report(BaseModel):
     class Config:
         from_attributes = True
 
+
 # --- Схемы для Заказов Подписки ---
 class SubscriptionOrderBase(BaseModel):
     customer_name: str
+
 
 class SubscriptionOrderCreate(SubscriptionOrderBase):
     pass

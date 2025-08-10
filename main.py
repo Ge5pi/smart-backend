@@ -285,36 +285,40 @@ async def create_subscription(
 app.include_router(user_router, tags=["Users"])
 
 
-@app.post("/sessions/get-or-create", response_model=schemas.SessionResponse, tags=["AI Agent"])
-async def get_or_create_session(
-    file_id: str = Form(...),
-    current_user: models.User = Depends(auth.get_current_active_user),
-    db: Session = Depends(database.get_db)
+@app.get("/files/{file_id}/sessions", response_model=List[schemas.ChatSessionInfo], tags=["AI Agent"])
+async def get_file_sessions(
+    file_id: str,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """
-    Находит существующую сессию чата для пользователя и файла,
-    или создает новую, если она не существует.
-    Возвращает ID сессии и полную историю чата.
-    """
-    session = crud.get_chat_session(db, user_id=current_user.id, file_uid=file_id)
+    """Возвращает список всех сессий чата для указанного файла."""
+    sessions = crud.get_sessions_for_file(db, user_id=current_user.id, file_uid=file_id)
+    return sessions
 
-    if not session:
-        # Сессия не найдена, создаем новую
-        session_id = str(uuid.uuid4())
-        session = crud.create_chat_session(db, user_id=current_user.id, file_uid=file_id, session_id=session_id)
-        # Добавляем приветственное сообщение
-        initial_message = crud.add_chat_message(
-            db,
-            session_id=session.id,
-            role="assistant",
-            content="Сессия для файла успешно начата. Я готов к анализу. Что бы вы хотели узнать?"
-        )
-        history = [initial_message]
-    else:
-        # Сессия найдена, загружаем историю
-        history = crud.get_chat_messages(db, session_id=session.id)
+@app.post("/sessions/create", response_model=schemas.ChatSessionInfo, tags=["AI Agent"])
+async def create_new_session(
+    data: schemas.SessionCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Создает новую сессию чата для файла."""
+    session = crud.create_chat_session(db, user_id=current_user.id, file_uid=data.file_id)
+    return session
 
-    return {"session_id": session.id, "history": history}
+
+@app.get("/sessions/{session_id}/history", response_model=schemas.HistoryResponse, tags=["AI Agent"])
+async def get_session_history(
+        session_id: str,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Получает историю сообщений для конкретной сессии."""
+    session = crud.get_session_by_id(db, session_id)
+    if not session or session.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Сессия не найдена или у вас нет к ней доступа.")
+
+    messages = crud.get_chat_messages(db, session_id)
+    return {"history": messages}
 
 
 def format_row(row_index: int, row: pd.Series) -> str:
