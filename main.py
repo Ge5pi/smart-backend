@@ -285,24 +285,36 @@ async def create_subscription(
 app.include_router(user_router, tags=["Users"])
 
 
-@app.post("/sessions/start")
-async def start_session(file_id: str = Form(...), current_user: models.User = Depends(auth.get_current_active_user),
-                        db: Session = Depends(database.get_db)):
-    print(f"User {current_user.email} (ID: {current_user.id}) is starting a new session.")
+@app.post("/sessions/get-or-create", response_model=schemas.SessionResponse, tags=["AI Agent"])
+async def get_or_create_session(
+    file_id: str = Form(...),
+    current_user: models.User = Depends(auth.get_current_active_user),
+    db: Session = Depends(database.get_db)
+):
+    """
+    Находит существующую сессию чата для пользователя и файла,
+    или создает новую, если она не существует.
+    Возвращает ID сессии и полную историю чата.
+    """
+    session = crud.get_chat_session(db, user_id=current_user.id, file_uid=file_id)
 
-    file_record = crud.get_file_by_uid(db, file_id)
-    if not file_record or file_record.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="File not found or access denied.")
+    if not session:
+        # Сессия не найдена, создаем новую
+        session_id = str(uuid.uuid4())
+        session = crud.create_chat_session(db, user_id=current_user.id, file_uid=file_id, session_id=session_id)
+        # Добавляем приветственное сообщение
+        initial_message = crud.add_chat_message(
+            db,
+            session_id=session.id,
+            role="assistant",
+            content="Сессия для файла успешно начата. Я готов к анализу. Что бы вы хотели узнать?"
+        )
+        history = [initial_message]
+    else:
+        # Сессия найдена, загружаем историю
+        history = crud.get_chat_messages(db, session_id=session.id)
 
-    session_id = str(uuid.uuid4())
-    session_data = {
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}],
-        "file_id": file_id,
-        "user_id": current_user.id
-    }
-    redis_client.setex(session_id, timedelta(hours=2), json.dumps(session_data))
-
-    return {"session_id": session_id, "message": "Сессия успешно начата."}
+    return {"session_id": session.id, "history": history}
 
 
 def format_row(row_index: int, row: pd.Series) -> str:
@@ -632,35 +644,44 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
             status_code=403,
             detail="Вы использовали все бесплатные сообщения. Пожалуйста, перейдите на платный тариф."
         )
-    session_data_json = redis_client.get(session_id)
-    if not session_data_json:
-        raise HTTPException(status_code=404, detail="Сессия не найдена или истекла.")
 
-    session_data = json.loads(session_data_json)
-    file_id = session_data["file_id"]
-    messages = session_data["messages"]
+    # Проверяем наличие сессии в БД
+    session = db.query(models.ChatSession).filter(models.ChatSession.id == session_id,
+                                                  models.ChatSession.user_id == current_user.id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена или у вас нет к ней доступа.")
+
+    # Сохраняем сообщение пользователя в БД
+    crud.add_chat_message(db, session_id=session_id, role="user", content=query)
+
+    # Загружаем историю из БД для контекста
+    db_messages = crud.get_chat_messages(db, session_id=session.id)
+    messages = [{"role": msg.role, "content": msg.content} for msg in db_messages]
 
     try:
         lang_code = detect(query)
     except LangDetectException:
         lang_code = 'ru'
-
     lang_name = LANG_MAP.get(lang_code, lang_code)
 
-    df = get_df_from_s3(db, file_id)
+    df = get_df_from_s3(db, session.file.file_uid)
 
     buf = io.StringIO()
     df.info(buf=buf, verbose=False)
     df_info = buf.getvalue()
     df_head = df.head().to_markdown()
 
-    messages[0][
-        'content'] = SYSTEM_PROMPT + f"\n\nВАЖНО: Текущий язык общения - {lang_name}. Все ответы должны быть на этом " \
-                                     f"языке. "
+    # Вставляем системный промпт в начало (не сохраняем его в БД)
+    system_prompt_message = {
+        "role": "system",
+        "content": SYSTEM_PROMPT + f"\n\nВАЖНО: Текущий язык общения - {lang_name}. Все ответы должны быть на этом языке."
+    }
 
-    contextual_query = f"Контекст данных:\n1. Схема данных (df.info()):\n```\n{df_info}```\n2. Первые 5 строк (" \
-                       f"df.head()):\n```\n{df_head}```\n---\nВопрос пользователя: {query} "
-    messages.append({"role": "user", "content": contextual_query})
+    contextual_query = f"Контекст данных:\n1. Схема данных (df.info()):\n```\n{df_info}```\n2. Первые 5 строк (df.head()):\n```\n{df_head}```\n---\nВопрос пользователя: {query}"
+
+    # Заменяем последний user-вопрос на расширенный с контекстом
+    messages[-1]['content'] = contextual_query
+    messages.insert(0, system_prompt_message)
 
     try:
         final_answer = ""
@@ -668,7 +689,8 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
             response = client.chat.completions.create(model=AGENT_MODEL, messages=messages, tools=tools_definition,
                                                       tool_choice="auto")
             response_message = response.choices[0].message
-            messages.append(response_message.model_dump())
+            # Важно: `messages` обновляется внутри цикла для сохранения контекста вызова инструментов
+            messages.append(response_message.model_dump(exclude_unset=True))
 
             if not response_message.tool_calls:
                 final_answer = response_message.content
@@ -678,12 +700,18 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
 
+                # Добавляем file_id в аргументы для функций, которым он нужен
+                if function_name in ["answer_question_from_context", "save_dataframe_to_file"]:
+                    function_args["file_id"] = session.file.file_uid
+
                 if function_name == "execute_python_code":
                     df, function_response = execute_python_code(df=df, code=function_args.get("code"))
                 elif function_name == "save_dataframe_to_file":
-                    function_response = save_dataframe_to_file(db=db, file_id=file_id, df_to_save=df)
+                    function_response = save_dataframe_to_file(db=db, file_id=function_args.get("file_id"),
+                                                               df_to_save=df)
                 elif function_name == "answer_question_from_context":
-                    function_response = answer_question_from_context(file_id=file_id, query=function_args.get("query"),
+                    function_response = answer_question_from_context(file_id=function_args.get("file_id"),
+                                                                     query=function_args.get("query"),
                                                                      lang_name=lang_name)
                 else:
                     function_response = f"Ошибка: неизвестный инструмент {function_name}"
@@ -692,29 +720,33 @@ async def session_ask(session_id: str = Form(...), query: str = Form(...), db: S
                     {"tool_call_id": tool_call.id, "role": "tool", "name": function_name, "content": function_response})
 
         if not final_answer:
-            last_response = client.chat.completions.create(model=AGENT_MODEL, messages=messages)
+            # Убираем системный промпт перед финальным запросом, если он не нужен
+            final_messages = [msg for msg in messages if msg.get("role") != "system"]
+            last_response = client.chat.completions.create(model=AGENT_MODEL, messages=final_messages)
             final_answer = last_response.choices[0].message.content
-            messages.append({"role": "assistant", "content": final_answer})
 
         evaluation = get_critic_evaluation(query, final_answer)
         if evaluation.get("accuracy", 5) < 4:
+            # Передаем историю без системного промпта
+            history_for_refiner = [msg for msg in messages if msg.get("role") != "system"]
             refined_answer = get_refined_answer(
-                history=[msg for msg in messages if isinstance(msg, dict)],
+                history=history_for_refiner,
                 original_answer=final_answer,
                 feedback=evaluation.get("feedback"),
                 suggestion=evaluation.get("suggestion", ""),
-                lang_name=lang_name  # Передаем язык и сюда
+                lang_name=lang_name
             )
             final_answer = refined_answer
-            messages.append({"role": "assistant", "content": final_answer})
+
+        # Сохраняем ответ ассистента в БД
+        if final_answer:
+            crud.add_chat_message(db, session_id=session_id, role="assistant", content=final_answer)
 
         crud.increment_usage_counter(db, user=current_user, counter_type='messages')
-        session_data["messages"] = messages
-        redis_client.setex(session_id, timedelta(hours=2), json.dumps(session_data))
+
+        # Удаляем логику Redis для хранения сообщений
         return {"answer": final_answer, "evaluation": evaluation}
     except Exception as e:
-        session_data["messages"] = messages
-        redis_client.setex(session_id, timedelta(hours=2), json.dumps(session_data))
         print(f"Error in session_ask (session: {session_id}): {e}")
         raise HTTPException(status_code=500, detail=f"Произошла внутренняя ошибка: {str(e)}")
 

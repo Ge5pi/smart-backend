@@ -202,7 +202,8 @@ def increment_usage_counter(db: Session, user: models.User, counter_type: str):
     db.refresh(user)
 
 
-def create_subscription_order(db: Session, order: schemas.SubscriptionOrderCreate, user_id: int) -> models.SubscriptionOrder:
+def create_subscription_order(db: Session, order: schemas.SubscriptionOrderCreate,
+                              user_id: int) -> models.SubscriptionOrder:
     db_order = models.SubscriptionOrder(
         customer_name=order.customer_name,
         user_id=user_id
@@ -211,3 +212,50 @@ def create_subscription_order(db: Session, order: schemas.SubscriptionOrderCreat
     db.commit()
     db.refresh(db_order)
     return db_order
+
+
+def get_chat_session(db: Session, user_id: int, file_uid: str) -> Optional[models.ChatSession]:
+    """Находит сессию чата по пользователю и уникальному ID файла."""
+    file_record = get_file_by_uid(db, file_uid)
+    if not file_record:
+        return None
+    return db.query(models.ChatSession).filter(
+        models.ChatSession.user_id == user_id,
+        models.ChatSession.file_id == file_record.id
+    ).first()
+
+
+def create_chat_session(db: Session, user_id: int, file_uid: str, session_id: str) -> models.ChatSession:
+    """Создает новую сессию чата."""
+    file_record = get_file_by_uid(db, file_uid)
+    if not file_record:
+        raise ValueError("Файл не найден для создания сессии")
+
+    db_session = models.ChatSession(
+        id=session_id,
+        user_id=user_id,
+        file_id=file_record.id
+    )
+    db.add(db_session)
+    db.commit()
+    db.refresh(db_session)
+    return db_session
+
+
+def add_chat_message(db: Session, session_id: str, role: str, content: str) -> models.ChatMessage:
+    """Добавляет новое сообщение в сессию чата."""
+    db_message = models.ChatMessage(
+        session_id=session_id,
+        role=role,
+        content=content
+    )
+    db.add(db_message)
+    db.commit()
+    db.refresh(db_message)
+    return db_message
+
+
+def get_chat_messages(db: Session, session_id: str) -> List[models.ChatMessage]:
+    """Получает все сообщения для указанной сессии."""
+    return db.query(models.ChatMessage).filter(models.ChatMessage.session_id == session_id).order_by(
+        models.ChatMessage.created_at.asc()).all()

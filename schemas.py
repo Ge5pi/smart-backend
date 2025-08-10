@@ -1,5 +1,8 @@
+# schemas.py
+
 from pydantic import BaseModel
 from datetime import datetime
+from typing import List
 
 
 class FileBase(BaseModel):
@@ -39,6 +42,25 @@ class User(UserBase):
     class Config:
         from_attributes = True
 
+# --- Новые схемы для чата ---
+
+class ChatMessageBase(BaseModel):
+    role: str
+    content: str
+
+class ChatMessage(ChatMessageBase):
+    id: int
+    session_id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SessionResponse(BaseModel):
+    session_id: str
+    history: List[ChatMessage]
+
+# ----------------------------
 
 class DatabaseConnection(BaseModel):
     id: int

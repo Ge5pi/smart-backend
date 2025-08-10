@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON
+# models.py
+
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, Text
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from database import Base
@@ -16,6 +18,8 @@ class User(Base):
     files = relationship("File", back_populates="owner")
     connections = relationship("DatabaseConnection", back_populates="user")
     reports = relationship("Report", back_populates="user")
+    # Добавлено: Связь с сессиями чата
+    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
 
 
 class File(Base):
@@ -27,6 +31,33 @@ class File(Base):
     file_name = Column(String, nullable=False)
     owner = relationship("User", back_populates="files")
     s3_path = Column(String, unique=True, nullable=False)
+    # Добавлено: Связь с сессиями чата
+    chat_sessions = relationship("ChatSession", back_populates="file", cascade="all, delete-orphan")
+
+
+# Новая модель для сессий чата
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    id = Column(String, primary_key=True, index=True)  # UUID сессии
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    file_id = Column(Integer, ForeignKey("an_files.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="chat_sessions")
+    file = relationship("File", back_populates="chat_sessions")
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+
+
+# Новая модель для сообщений в чате
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # 'user' или 'assistant'
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ChatSession", back_populates="messages")
 
 
 class DatabaseConnection(Base):
