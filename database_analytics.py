@@ -3,8 +3,6 @@ import io
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy.orm import Session
 import logging
-
-# ИЗМЕНЕНИЕ: Импортируем задачу Celery
 from starlette.responses import StreamingResponse, Response
 
 from celery_worker import run_db_analysis_task
@@ -14,7 +12,7 @@ import database
 import models
 import schemas
 from pdf_generator import generate_pdf_report
-from main import REPORT_LIMIT
+from config import REPORT_LIMIT
 
 database_router = APIRouter(prefix="/analytics/database")
 

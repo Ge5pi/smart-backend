@@ -28,13 +28,10 @@ import crud
 import database
 import models
 import schemas
-from config import API_KEY, PINECONE_KEY, redis_client
+from config import API_KEY, PINECONE_KEY, redis_client, MESSAGE_LIMIT
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
-
-MESSAGE_LIMIT = 10
-REPORT_LIMIT = 1
 
 try:
 
