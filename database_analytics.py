@@ -23,7 +23,7 @@ async def analyze_database(
         dbType: str = Form(...),
         alias: str = Form(...),
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_user())
+        current_user: models.User = Depends(auth.get_current_active_user())
 ):
     if (not current_user.is_active) and current_user.reports_used >= REPORT_LIMIT:
         raise HTTPException(
@@ -54,7 +54,7 @@ async def analyze_database(
 @database_router.get("/connections", response_model=list[schemas.DatabaseConnection])
 async def get_user_connections(
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_user)
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return crud.get_database_connections_by_user_id(db, user_id=current_user.id)
 
@@ -63,7 +63,7 @@ async def get_user_connections(
 async def get_report_details(
         report_id: int,
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_user)
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     report = crud.get_report_by_id(db, report_id=report_id)
 
@@ -79,7 +79,7 @@ async def get_report_details(
 @database_router.get("/reports", response_model=list[schemas.Report])
 async def get_user_reports(
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return crud.get_reports_by_user_id(db, user_id=current_user.id)
 
@@ -88,7 +88,7 @@ async def get_user_reports(
 async def download_report_pdf(
         report_id: int,
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_user)
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     report = crud.get_report_by_id(db, report_id=report_id)
 
