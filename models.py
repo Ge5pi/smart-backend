@@ -18,7 +18,6 @@ class User(Base):
     files = relationship("File", back_populates="owner")
     connections = relationship("DatabaseConnection", back_populates="user")
     reports = relationship("Report", back_populates="user")
-    # Добавлено: Связь с сессиями чата
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -31,21 +30,25 @@ class File(Base):
     file_name = Column(String, nullable=False)
     owner = relationship("User", back_populates="files")
     s3_path = Column(String, unique=True, nullable=False)
-    # Добавлено: Связь с сессиями чата
     chat_sessions = relationship("ChatSession", back_populates="file", cascade="all, delete-orphan")
 
 
 # Новая модель для сессий чата
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
-    id = Column(String, primary_key=True, index=True)  # UUID сессии
+    id = Column(String, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     file_id = Column(Integer, ForeignKey("an_files.id"), nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Добавлено: поле для отслеживания последней активности в чате
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Добавлено: поле для заголовка чата
+    title = Column(String, default="Новый диалог")
 
     user = relationship("User", back_populates="chat_sessions")
     file = relationship("File", back_populates="chat_sessions")
-    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+    # Добавлена сортировка сообщений по умолчанию
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
 
 
 # Новая модель для сообщений в чате
@@ -53,10 +56,9 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False, index=True)
-    role = Column(String, nullable=False)  # 'user' или 'assistant'
+    role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
     session = relationship("ChatSession", back_populates="messages")
 
 

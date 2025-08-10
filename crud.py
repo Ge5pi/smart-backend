@@ -1,4 +1,5 @@
 import secrets
+import uuid
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -177,11 +178,20 @@ def get_user_from_reset_token(db: Session, token: str) -> Optional[models.User]:
 
 
 def reset_user_password(db: Session, token: str, new_password: str) -> bool:
-    user = get_user_from_reset_token(db, token)
+    db_token = db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.token == token,
+        models.PasswordResetToken.created_at >= datetime.utcnow() - timedelta(hours=1)
+    ).first()
+
+    if not db_token:
+        return False
+
+    user = db.query(models.User).filter(models.User.id == db_token.user_id).first()
     if not user:
         return False
+
     user.hashed_password = get_password_hash(new_password)
-    db.query(models.PasswordResetToken).filter(models.PasswordResetToken.token == token).delete()
+    db.delete(db_token)
     db.commit()
     return True
 
@@ -225,16 +235,17 @@ def get_chat_session(db: Session, user_id: int, file_uid: str) -> Optional[model
     ).first()
 
 
-def create_chat_session(db: Session, user_id: int, file_uid: str, session_id: str) -> models.ChatSession:
-    """Создает новую сессию чата."""
+def create_chat_session(db: Session, user_id: int, file_uid: str) -> models.ChatSession:
+    """Создает новую пустую сессию чата с уникальным ID и временным заголовком."""
     file_record = get_file_by_uid(db, file_uid)
     if not file_record:
         raise ValueError("Файл не найден для создания сессии")
 
     db_session = models.ChatSession(
-        id=session_id,
+        id=str(uuid.uuid4()),
         user_id=user_id,
-        file_id=file_record.id
+        file_id=file_record.id,
+        title=f"Новый диалог от {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
     db.add(db_session)
     db.commit()
@@ -242,13 +253,38 @@ def create_chat_session(db: Session, user_id: int, file_uid: str, session_id: st
     return db_session
 
 
+def get_sessions_for_file(db: Session, user_id: int, file_uid: str) -> List[models.ChatSession]:
+    """Находит все сессии чата для пользователя и файла, сортируя по последней активности."""
+    file_record = get_file_by_uid(db, file_uid)
+    if not file_record:
+        return []
+    return db.query(models.ChatSession).filter(
+        models.ChatSession.user_id == user_id,
+        models.ChatSession.file_id == file_record.id
+    ).order_by(models.ChatSession.last_updated.desc()).all()
+
+
+def get_session_by_id(db: Session, session_id: str) -> Optional[models.ChatSession]:
+    """Получает сессию чата по ее ID."""
+    return db.query(models.ChatSession).filter(models.ChatSession.id == session_id).first()
+
+
 def add_chat_message(db: Session, session_id: str, role: str, content: str) -> models.ChatMessage:
-    """Добавляет новое сообщение в сессию чата."""
+    """Добавляет новое сообщение, обновляет время активности сессии и ее заголовок."""
+    session = get_session_by_id(db, session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+
+    # Устанавливаем заголовок чата по первому сообщению от пользователя
+    if session.title.startswith("Новый диалог") and role == 'user' and content:
+        session.title = content[:50] + '...' if len(content) > 50 else content
+
     db_message = models.ChatMessage(
         session_id=session_id,
         role=role,
         content=content
     )
+    session.last_updated = datetime.utcnow()
     db.add(db_message)
     db.commit()
     db.refresh(db_message)
@@ -256,6 +292,6 @@ def add_chat_message(db: Session, session_id: str, role: str, content: str) -> m
 
 
 def get_chat_messages(db: Session, session_id: str) -> List[models.ChatMessage]:
-    """Получает все сообщения для указанной сессии."""
-    return db.query(models.ChatMessage).filter(models.ChatMessage.session_id == session_id).order_by(
-        models.ChatMessage.created_at.asc()).all()
+    """Получает все сообщения для указанной сессии, используя установленную в модели сортировку."""
+    session = get_session_by_id(db, session_id)
+    return session.messages if session else []
