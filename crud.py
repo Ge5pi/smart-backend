@@ -200,3 +200,14 @@ def increment_usage_counter(db: Session, user: models.User, counter_type: str):
 
     db.commit()
     db.refresh(user)
+
+
+def create_subscription_order(db: Session, order: schemas.SubscriptionOrderCreate, user_id: int) -> models.SubscriptionOrder:
+    db_order = models.SubscriptionOrder(
+        customer_name=order.customer_name,
+        user_id=user_id
+    )
+    db.add(db_order)
+    db.commit()
+    db.refresh(db_order)
+    return db_order

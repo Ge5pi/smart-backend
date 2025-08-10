@@ -69,3 +69,15 @@ class PasswordResetToken(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     token = Column(String, unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SubscriptionOrder(Base):
+    __tablename__ = "subscription_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    customer_name = Column(String, nullable=False)
+    status = Column(String, default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")

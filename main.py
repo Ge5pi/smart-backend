@@ -236,6 +236,52 @@ async def read_users_me(current_user: models.User = Depends(auth.get_current_act
     return current_user
 
 
+@user_router.post("/users/subscribe", response_model=schemas.SubscriptionOrder, tags=["Users"])
+async def create_subscription(
+    order_data: schemas.SubscriptionOrderCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """Принимает заявку на подписку от пользователя."""
+
+    # 1. Создаем заявку в БД
+    order = crud.create_subscription_order(db=db, order=order_data, user_id=current_user.id)
+
+    # 2. Готовим и отправляем письмо администратору (вам)
+    admin_message = MessageSchema(
+        subject=f"Новая заявка на подписку от {current_user.email}",
+        recipients=["danyagespi@gmail.com"],
+        body=f"""
+        Поступила новая заявка на подписку:
+        - Имя клиента: {order.customer_name}
+        - Email пользователя: {current_user.email}
+        - Время заявки: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC
+        """,
+        subtype="plain"
+    )
+
+    # 3. Готовим и отправляем письмо-подтверждение пользователю
+    user_message = MessageSchema(
+        subject="Ваша заявка на подписку SODA принята",
+        recipients=[current_user.email],
+        body=f"""
+        Здравствуйте, {order.customer_name}!
+
+        Спасибо за вашу заявку на подписку. Мы получили ее и свяжемся с вами в течение часа для уточнения деталей.
+
+        С уважением,
+        Команда SODA
+        """,
+        subtype="plain"
+    )
+
+    fm = FastMail(conf_mail)
+    await fm.send_message(admin_message)
+    await fm.send_message(user_message)
+
+    return order
+
+
 app.include_router(user_router, tags=["Users"])
 
 

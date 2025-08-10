@@ -81,3 +81,20 @@ class PasswordResetRequest(BaseModel):
 class PasswordReset(BaseModel):
     token: str
     new_password: str
+
+class SubscriptionOrderBase(BaseModel):
+    customer_name: str
+
+
+class SubscriptionOrderCreate(SubscriptionOrderBase):
+    pass
+
+
+class SubscriptionOrder(SubscriptionOrderBase):
+    id: int
+    user_id: int
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
