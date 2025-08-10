@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import numpy as np
 import openai
 import pandas as pd
