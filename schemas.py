@@ -62,8 +62,8 @@ class ChatSessionInfo(BaseModel):
     id: str
     file_id: int
     created_at: datetime
-    last_updated: datetime
-    title: str
+    last_updated: Optional[datetime] = None
+    title: Optional[str] = None
 
     class Config:
         from_attributes = True
