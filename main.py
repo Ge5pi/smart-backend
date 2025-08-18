@@ -85,7 +85,8 @@ vk_mini_app_router = APIRouter(
     tags=["VK Mini App"]
 )
 
-allow_origin_regex = r"https://smart-frontend-production\.up\.railway\.app|http://localhost:5173|https?://(www\.)?soda\.contact"
+allow_origin_regex = r"https://smart-frontend-production\.up\.railway\.app|http://localhost:5173|https?://(" \
+                     r"www\.)?soda\.contact|https://soda-vk\.vercel\.app|https://soda-data\.netlify\.app "
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 AGENT_MODEL = "gpt-4.1-nano"
