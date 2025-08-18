@@ -19,6 +19,7 @@ class User(Base):
     connections = relationship("DatabaseConnection", back_populates="user")
     reports = relationship("Report", back_populates="user")
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
+    vk_id = Column(Integer, unique=True, index=True, nullable=True)
 
 
 class File(Base):

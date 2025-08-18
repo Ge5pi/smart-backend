@@ -40,6 +40,8 @@ PINECONE_KEY = os.getenv("PINECONE_API_KEY")
 
 enc = os.getenv("ENCRYPTION_KEY")
 
+VK_SECURE_KEY = os.getenv("VK_SECURE_KEY")
+
 ENCRYPTION_KEY = enc.encode('utf-8')
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=15)
 # Проверка, что ключевые переменные установлены
