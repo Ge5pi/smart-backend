@@ -1087,7 +1087,7 @@ async def vk_analyze_existing_file(
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
     """Анализирует существующий файл и возвращает структуру и превью."""
-    df = get_df_from_s3(db, file_id, current_user.id)
+    df = get_df_from_s3(db, file_id)
     analysis = [{"column": col, "dtype": str(df[col].dtype), "nulls": int(df[col].isna().sum()),
                  "unique": int(df[col].nunique())} for col in df.columns]
     preview_data = df.head(50).fillna("null").to_dict(orient="records")
@@ -1102,7 +1102,7 @@ async def vk_impute_missing(
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
     """Заполняет пропуски в указанных столбцах и сохраняет измененный файл."""
-    df = get_df_from_s3(db, file_id, current_user.id)
+    df = get_df_from_s3(db, file_id)
     selected_columns = json.loads(columns)
 
     missing_before = {col: int(df[col].isna().sum()) for col in selected_columns}
@@ -1130,7 +1130,7 @@ async def vk_detect_outliers(
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
     """Находит выбросы в числовых столбцах с помощью IsolationForest."""
-    df = get_df_from_s3(db, file_id, current_user.id)
+    df = get_df_from_s3(db, file_id)
     selected_columns = json.loads(columns)
 
     numeric_df = df[selected_columns].select_dtypes(include=np.number).dropna()
@@ -1157,7 +1157,7 @@ async def vk_encode_categorical(
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
     """Кодирует категориальные признаки методом One-Hot Encoding."""
-    df = get_df_from_s3(db, file_id, current_user.id)
+    df = get_df_from_s3(db, file_id)
     selected_columns = json.loads(columns)
 
     if not all(col in df.columns for col in selected_columns):
