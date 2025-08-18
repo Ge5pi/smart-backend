@@ -101,7 +101,7 @@ origins = [
     "http://localhost:5173",
     "https://soda.contact",
     "https://www.soda.contact",
-    "https://soda-data.netlify.app/",
+    "https://soda-data.netlify.app",
 ]
 
 app.add_middleware(
