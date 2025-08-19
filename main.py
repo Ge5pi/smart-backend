@@ -82,6 +82,8 @@ async def startup_event():
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok"}
+
+
 vk_mini_app_router = APIRouter(
     prefix="/vk-api",
     tags=["VK Mini App"]
@@ -259,9 +261,9 @@ async def read_users_me(current_user: models.User = Depends(auth.get_current_act
 
 @user_router.post("/users/subscribe", response_model=schemas.SubscriptionOrder, tags=["Users"])
 async def create_subscription(
-    order_data: schemas.SubscriptionOrderCreate,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        order_data: schemas.SubscriptionOrderCreate,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Принимает заявку на подписку от пользователя."""
 
@@ -308,19 +310,20 @@ app.include_router(user_router, tags=["Users"])
 
 @app.get("/files/{file_id}/sessions", response_model=List[schemas.ChatSessionInfo], tags=["AI Agent"])
 async def get_file_sessions(
-    file_id: str,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        file_id: str,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Возвращает список всех сессий чата для указанного файла."""
     sessions = crud.get_sessions_for_file(db, user_id=current_user.id, file_uid=file_id)
     return sessions
 
+
 @app.post("/sessions/create", response_model=schemas.ChatSessionInfo, tags=["AI Agent"])
 async def create_new_session(
-    data: schemas.SessionCreate,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        data: schemas.SessionCreate,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Создает новую сессию чата для файла."""
     session = crud.create_chat_session(db, user_id=current_user.id, file_uid=data.file_id)
@@ -1119,7 +1122,6 @@ async def vk_get_paginated_preview(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    # Проверка доступа к файлу
     file_record = crud.get_file_by_uid(db, file_id)
     if not file_record or file_record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Доступ к файлу запрещен.")
