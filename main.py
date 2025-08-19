@@ -30,6 +30,7 @@ import models
 import schemas
 from config import API_KEY, PINECONE_KEY, redis_client, MESSAGE_LIMIT
 from vk_auth import verify_vk_launch_params
+from tg_router import telegram_mini_app_router
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
@@ -63,6 +64,7 @@ client = openai.OpenAI(api_key=api_key)
 pc = pinecone.Pinecone(api_key=pinecone_key)
 app = FastAPI(title="SODA API")
 app.include_router(database_router, tags=["Database Analytics"])
+app.include_router(telegram_mini_app_router, tags=["Telegram Mini App"])
 
 
 @app.on_event("startup")

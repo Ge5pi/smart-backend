@@ -1,6 +1,6 @@
 # models.py
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, Text, BigInteger
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from database import Base
@@ -20,6 +20,7 @@ class User(Base):
     reports = relationship("Report", back_populates="user")
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
     vk_id = Column(Integer, unique=True, index=True, nullable=True)
+    platform_id = Column(BigInteger, unique=True, index=True, nullable=True)
 
 
 class File(Base):
