@@ -29,9 +29,8 @@ import database
 import models
 import schemas
 from config import API_KEY, PINECONE_KEY, redis_client, MESSAGE_LIMIT
+from tg_auth import verify_telegram_init_data
 from vk_auth import verify_vk_launch_params
-from tg_router import telegram_mini_app_router
-import services
 
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
@@ -67,6 +66,7 @@ app = FastAPI(title="SODA API")
 app.include_router(database_router, tags=["Database Analytics"])
 
 
+
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -82,8 +82,6 @@ async def startup_event():
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok"}
-
-
 vk_mini_app_router = APIRouter(
     prefix="/vk-api",
     tags=["VK Mini App"]
@@ -261,9 +259,9 @@ async def read_users_me(current_user: models.User = Depends(auth.get_current_act
 
 @user_router.post("/users/subscribe", response_model=schemas.SubscriptionOrder, tags=["Users"])
 async def create_subscription(
-        order_data: schemas.SubscriptionOrderCreate,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
+    order_data: schemas.SubscriptionOrderCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Принимает заявку на подписку от пользователя."""
 
@@ -310,20 +308,19 @@ app.include_router(user_router, tags=["Users"])
 
 @app.get("/files/{file_id}/sessions", response_model=List[schemas.ChatSessionInfo], tags=["AI Agent"])
 async def get_file_sessions(
-        file_id: str,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
+    file_id: str,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Возвращает список всех сессий чата для указанного файла."""
     sessions = crud.get_sessions_for_file(db, user_id=current_user.id, file_uid=file_id)
     return sessions
 
-
 @app.post("/sessions/create", response_model=schemas.ChatSessionInfo, tags=["AI Agent"])
 async def create_new_session(
-        data: schemas.SessionCreate,
-        db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
+    data: schemas.SessionCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Создает новую сессию чата для файла."""
     session = crud.create_chat_session(db, user_id=current_user.id, file_uid=data.file_id)
@@ -1052,7 +1049,27 @@ async def vk_upload_file(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return await services.logic_upload_file(file, db, current_user)
+    """Загружает новый файл, сохраняет его в GCS и создает запись в БД."""
+    file_id = str(uuid.uuid4())
+    original_filename = file.filename
+
+    file_extension = Path(original_filename).suffix.lower()
+    if file_extension not in ['.csv', '.xlsx', '.xls']:
+        raise HTTPException(status_code=400, detail="Неподдерживаемый тип файла. Допускаются только CSV, XLSX, XLS.")
+
+    s3_path = f"uploads/{current_user.id}/{file_id}/{original_filename}"
+
+    try:
+        contents = await file.read()
+        blob = config.gcs_bucket.blob(s3_path)
+        blob.upload_from_string(contents, content_type=file.content_type)
+
+        db_file = crud.create_user_file(db=db, user_id=current_user.id, file_uid=file_id, file_name=original_filename,
+                                        s3_path=s3_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при загрузке файла: {e}")
+
+    return db_file
 
 
 @vk_mini_app_router.get("/files/me", response_model=List[schemas.File])
@@ -1060,7 +1077,8 @@ def vk_read_user_files(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return services.logic_read_user_files(db, current_user)
+    """Возвращает список файлов, загруженных текущим пользователем VK."""
+    return crud.get_files_by_user_id(db=db, user_id=current_user.id)
 
 
 @vk_mini_app_router.post("/analyze-existing/")
@@ -1069,10 +1087,12 @@ async def vk_analyze_existing_file(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    file_record = crud.get_file_by_uid(db, file_id)
-    if not file_record or file_record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Доступ к файлу запрещен.")
-    return services.logic_analyze_existing_file(file_id, db)
+    """Анализирует существующий файл и возвращает структуру и превью."""
+    df = get_df_from_s3(db, file_id)
+    analysis = [{"column": col, "dtype": str(df[col].dtype), "nulls": int(df[col].isna().sum()),
+                 "unique": int(df[col].nunique())} for col in df.columns]
+    preview_data = df.head(50).fillna("null").to_dict(orient="records")
+    return {"columns": analysis, "preview": preview_data, "total_rows": len(df)}
 
 
 @vk_mini_app_router.post("/impute-missing/")
@@ -1082,7 +1102,25 @@ async def vk_impute_missing(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return services.logic_impute_missing(file_id, columns, db, current_user)
+    """Заполняет пропуски в указанных столбцах и сохраняет измененный файл."""
+    df = get_df_from_s3(db, file_id)
+    selected_columns = json.loads(columns)
+
+    missing_before = {col: int(df[col].isna().sum()) for col in selected_columns}
+
+    df_imputed, processing_results = impute_with_sklearn(df, selected_columns)
+
+    missing_after = {col: int(df_imputed[col].isna().sum()) for col in selected_columns}
+
+    save_df_to_s3(db, file_id, current_user.id, df_imputed)
+
+    return {
+        "processing_results": processing_results,
+        "missing_before": missing_before,
+        "missing_after": missing_after,
+        "preview": df_imputed.head(50).fillna("null").to_dict(orient="records"),
+        "total_rows": len(df_imputed)
+    }
 
 
 @vk_mini_app_router.post("/outliers/")
@@ -1092,7 +1130,24 @@ async def vk_detect_outliers(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return services.logic_detect_outliers(file_id, columns, db)
+    """Находит выбросы в числовых столбцах с помощью IsolationForest."""
+    df = get_df_from_s3(db, file_id)
+    selected_columns = json.loads(columns)
+
+    numeric_df = df[selected_columns].select_dtypes(include=np.number).dropna()
+    if numeric_df.empty:
+        return {"outlier_count": 0, "outlier_preview": []}
+
+    model = IsolationForest(contamination=0.05, random_state=42)
+    predictions = model.fit_predict(numeric_df)
+
+    outlier_indices = numeric_df.index[predictions == -1]
+    outliers_df = df.loc[outlier_indices]
+
+    return {
+        "outlier_count": len(outliers_df),
+        "outlier_preview": outliers_df.head(100).fillna("null").to_dict('records')
+    }
 
 
 @vk_mini_app_router.post("/encode-categorical/")
@@ -1102,7 +1157,26 @@ async def vk_encode_categorical(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return services.logic_encode_categorical(file_id, columns, db, current_user)
+    """Кодирует категориальные признаки методом One-Hot Encoding."""
+    df = get_df_from_s3(db, file_id)
+    selected_columns = json.loads(columns)
+
+    if not all(col in df.columns for col in selected_columns):
+        raise HTTPException(status_code=404, detail="Один или несколько столбцов не найдены.")
+
+    df_encoded = pd.get_dummies(df, columns=selected_columns, prefix=selected_columns)
+
+    save_df_to_s3(db, file_id, current_user.id, df_encoded)
+
+    new_analysis = [{"column": col, "dtype": str(df_encoded[col].dtype), "nulls": int(df_encoded[col].isna().sum()),
+                     "unique": int(df_encoded[col].nunique())} for col in df_encoded.columns]
+
+    return {
+        "message": "Столбцы успешно закодированы.",
+        "columns": new_analysis,
+        "preview": df_encoded.head(50).fillna("null").to_dict(orient="records"),
+        "total_rows": len(df_encoded)
+    }
 
 
 @vk_mini_app_router.get("/download-cleaned/{file_id}")
@@ -1111,7 +1185,19 @@ async def vk_download_cleaned_file(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    return services.logic_download_cleaned_file(file_id, db, current_user)
+    """Отдает последнюю обработанную версию файла для скачивания."""
+    file_record = crud.get_file_by_uid(db, file_id)
+    if not file_record or file_record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="File not found or access denied.")
+
+    blob = config.gcs_bucket.blob(file_record.s3_path)
+    content = blob.download_as_bytes()
+
+    return Response(
+        content=content,
+        media_type='text/csv',
+        headers={"Content-Disposition": f'attachment; filename=\"{file_record.file_name}\"'}
+    )
 
 
 @vk_mini_app_router.get("/preview/{file_id}")
@@ -1122,13 +1208,76 @@ async def vk_get_paginated_preview(
         db: Session = Depends(database.get_db),
         current_user: models.User = Depends(verify_vk_launch_params)
 ):
-    file_record = crud.get_file_by_uid(db, file_id)
-    if not file_record or file_record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Доступ к файлу запрещен.")
-    return services.logic_get_paginated_preview(file_id, page, page_size, db)
+    """Возвращает постраничное превью файла."""
+    df = get_df_from_s3(db, file_id)
+
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    paginated_df = df.iloc[start_index:end_index]
+
+    return {
+        "preview": paginated_df.fillna("null").to_dict(orient="records"),
+        "total_rows": len(df)
+    }
 
 app.include_router(vk_mini_app_router)
-app.include_router(telegram_mini_app_router)
+
+telegram_mini_app_router = APIRouter(
+    prefix="/tg-api",
+    tags=["Telegram Mini App"]
+)
+
+
+@telegram_mini_app_router.post("/upload/")
+async def tg_upload_file(file: UploadFile = File(...), db: Session = Depends(database.get_db),
+                         current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_upload_file(file, db, current_user)
+
+
+@telegram_mini_app_router.get("/files/me", response_model=List[schemas.File])
+def tg_read_user_files(db: Session = Depends(database.get_db),
+                       current_user: models.User = Depends(verify_telegram_init_data)):
+    return vk_read_user_files(db, current_user)
+
+
+@telegram_mini_app_router.post("/analyze-existing/")
+async def tg_analyze_existing_file(file_id: str = Form(...), db: Session = Depends(database.get_db),
+                                   current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_analyze_existing_file(file_id, db, current_user)
+
+
+@telegram_mini_app_router.post("/impute-missing/")
+async def tg_impute_missing(file_id: str = Form(...), columns: str = Form(...), db: Session = Depends(database.get_db),
+                            current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_impute_missing(file_id, columns, db, current_user)
+
+
+@telegram_mini_app_router.post("/outliers/")
+async def tg_detect_outliers(file_id: str = Form(...), columns: str = Form(...), db: Session = Depends(database.get_db),
+                             current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_detect_outliers(file_id, columns, db, current_user)
+
+
+@telegram_mini_app_router.post("/encode-categorical/")
+async def tg_encode_categorical(file_id: str = Form(...), columns: str = Form(...),
+                                db: Session = Depends(database.get_db),
+                                current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_encode_categorical(file_id, columns, db, current_user)
+
+
+@telegram_mini_app_router.get("/download-cleaned/{file_id}")
+async def tg_download_cleaned_file(file_id: str, db: Session = Depends(database.get_db),
+                                   current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_download_cleaned_file(file_id, db, current_user)
+
+
+@telegram_mini_app_router.get("/preview/{file_id}")
+async def tg_get_paginated_preview(file_id: str, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
+                                   db: Session = Depends(database.get_db),
+                                   current_user: models.User = Depends(verify_telegram_init_data)):
+    return await vk_get_paginated_preview(file_id, page, page_size, db, current_user)
+
+app.include_router(telegram_mini_app_router, tags=["Telegram Mini App"])
 
 if __name__ == "__main__":
     import uvicorn
