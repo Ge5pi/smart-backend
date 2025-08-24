@@ -63,7 +63,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
     user = crud.get_user_by_email(db, email=email)
-    if user and user.is_active and user.expiration_date and datetime.now(timezone.utc) > user.expiration_date:
+    expiration_date_aware = user.expiration_date.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expiration_date_aware:
         user.is_active = False
         db.commit()
         db.refresh(user)
