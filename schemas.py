@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import List, Optional
 
@@ -37,7 +37,7 @@ class User(UserBase):
     is_verified: bool
 
     # Add the expiration_date field
-    expiration_date: Optional[datetime] = None
+    expiration_date: Optional[datetime] = Field(default=datetime(2023, 1, 1, 0, 0, 0))
 
     files: list[File] = []
     messages_used: int
