@@ -19,6 +19,7 @@ class User(Base):
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
     vk_id = Column(Integer, unique=True, index=True, nullable=True)
     platform_id = Column(BigInteger, unique=True, index=True, nullable=True)
+    expiration_date = Column(DateTime, nullable=True)
 
 
 class File(Base):

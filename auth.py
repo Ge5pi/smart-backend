@@ -63,6 +63,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
     user = crud.get_user_by_email(db, email=email)
+    if user and user.is_active and user.expiration_date and datetime.now(timezone.utc) > user.expiration_date:
+        user.is_active = False
+        db.commit()
+        db.refresh(user)
     if user is None:
         raise credentials_exception
     return user
@@ -70,4 +74,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # Dependency для проверки, что пользователь не только аутентифицирован, но и активен
 def get_current_active_user(current_user: models.User = Depends(get_current_user)):
+    if not current_user.is_active:
+        raise HTTPException(status_code=403, detail="Inactive user or subscription expired")
     return current_user

@@ -35,6 +35,10 @@ class User(UserBase):
     id: int
     is_active: bool
     is_verified: bool
+
+    # Add the expiration_date field
+    expiration_date: Optional[datetime] = None
+
     files: list[File] = []
     messages_used: int
     reports_used: int
@@ -124,6 +128,7 @@ class SubscriptionOrderBase(BaseModel):
 
 class SubscriptionOrderCreate(SubscriptionOrderBase):
     pass
+
 
 class SubscriptionOrder(SubscriptionOrderBase):
     id: int
