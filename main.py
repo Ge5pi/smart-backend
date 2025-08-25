@@ -9,7 +9,8 @@ import numpy as np
 import openai
 import pandas as pd
 import pinecone
-from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, Form, HTTPException, Query
+import time
+from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, Form, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
@@ -158,8 +159,26 @@ def save_df_to_s3(db: Session, file_id: str, user_id: int, df: pd.DataFrame):
         raise HTTPException(status_code=500, detail=f"Failed to save processed file to GCS: {str(e)}")
 
 
+def cleanup_unverified_user(user_id: int):
+    time.sleep(900)
+    db = database.SessionLocal()
+    try:
+        user_to_check = db.query(models.User).filter(models.User.id == user_id).first()
+        if user_to_check and not user_to_check.is_verified:
+            print(f"User '{user_to_check.email}' did not verify in time. Deleting account.")
+            db.query(models.EmailVerificationCode).filter(
+                models.EmailVerificationCode.user_id == user_id
+            ).delete(synchronize_session=False)
+
+            # Delete the user
+            db.delete(user_to_check)
+            db.commit()
+    finally:
+        db.close()
+
+
 @user_router.post("/users/register", response_model=schemas.User)
-async def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
+async def register_user(user: schemas.UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Пользователь с таким email уже зарегистрирован")
@@ -177,6 +196,8 @@ async def register_user(user: schemas.UserCreate, db: Session = Depends(database
 
     fm = FastMail(conf_mail)
     await fm.send_message(message)
+
+    background_tasks.add_task(cleanup_unverified_user, new_user.id)
 
     return new_user
 
