@@ -440,7 +440,6 @@ def get_critic_evaluation(query: str, answer: str) -> dict:
             model=CRITIC_MODEL,
             messages=[{"role": "user", "content": critic_prompt}],
             response_format={"type": "json_object"},
-            temperature=0.0,
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
