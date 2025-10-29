@@ -188,10 +188,8 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
             right_on = fk['referred_columns']
 
             try:
-                # Ограничиваем размер перед JOIN
-                max_rows_for_join = 5000
-                df_left_sample = df_left.sample(n=min(len(df_left), max_rows_for_join), random_state=42)
-                df_right_sample = df_right.sample(n=min(len(df_right), max_rows_for_join), random_state=42)
+                df_left_sample = df_left.sample(n=min(len(df_left), len(df_left)), random_state=42)
+                df_right_sample = df_right.sample(n=min(len(df_right), len(df_right)), random_state=42)
 
                 merged_df = pd.merge(
                     df_left_sample, df_right_sample,
