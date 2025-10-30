@@ -166,15 +166,17 @@ def cleanup_unverified_user(user_id: int):
         db.close()
 
 
-async def send_email_resend(subject: str, recipients: list, body: str):
+async def send_email_resend(subject: str, recipients: list, body: str, reply_to: str = None):
     """Отправка email через Resend API"""
     try:
-        params: resend.Emails.SendParams = {
-            "from": os.getenv("MAIL_FROM", "SODA <no-reply@soda.contact>"),  # Ваш верифицированный домен
+        params = {
+            "from": "SODA <no-reply@soda.contact>",  # Используйте ваш верифицированный домен
             "to": recipients,
             "subject": subject,
             "html": body,
         }
+        if reply_to:
+            params["reply_to"] = reply_to
         email = resend.Emails.send(params)
         print(f"Email sent successfully: {email}")
         return email
@@ -315,8 +317,9 @@ async def create_subscription(
 
     await send_email_resend(
         subject=f"Новая подписка: {current_user.email}",
-        recipients=["danyagespi@gmail.com"],
-        body=admin_body
+        recipients=["danyagespi@gmail.com"],  # Gmail в 'to' — это нормально
+        body=admin_body,
+        reply_to=current_user.email
     )
 
     # Письмо пользователю
