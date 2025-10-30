@@ -170,7 +170,7 @@ async def send_email_resend(subject: str, recipients: list, body: str):
     """Отправка email через Resend API"""
     try:
         params: resend.Emails.SendParams = {
-            "from": os.getenv("MAIL_FROM", "soda.data.tool@gmail.com"),  # Ваш верифицированный домен
+            "from": os.getenv("MAIL_FROM", "SODA <no-reply@soda.contact>"),  # Ваш верифицированный домен
             "to": recipients,
             "subject": subject,
             "html": body,
