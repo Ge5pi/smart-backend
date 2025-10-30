@@ -32,10 +32,10 @@ import schemas
 from config import API_KEY, PINECONE_KEY, redis_client, MESSAGE_LIMIT
 from tg_auth import verify_telegram_init_data
 from vk_auth import verify_vk_launch_params
-
+import resend
 api_key = API_KEY
 pinecone_key = PINECONE_KEY
-
+resend.api_key = os.getenv("RESEND_API")
 try:
 
     print("--- Successfully connected to Redis ---")
@@ -49,17 +49,6 @@ LANG_MAP = {
     'kz': 'казахском'
 }
 
-conf_mail = ConnectionConfig(
-    MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
-    MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
-    MAIL_PORT=465,
-    MAIL_SERVER="smtp.gmail.com",
-    MAIL_FROM=os.getenv("MAIL_FROM"),
-    MAIL_STARTTLS=False,
-    MAIL_SSL_TLS=True,
-    USE_CREDENTIALS=True,
-    VALIDATE_CERTS=True
-)
 
 client = openai.OpenAI(api_key=api_key)
 pc = pinecone.Pinecone(api_key=pinecone_key)
@@ -177,28 +166,50 @@ def cleanup_unverified_user(user_id: int):
         db.close()
 
 
+async def send_email_resend(subject: str, recipients: list, body: str):
+    """Отправка email через Resend API"""
+    try:
+        params: resend.Emails.SendParams = {
+            "from": os.getenv("MAIL_FROM", "onboarding@resend.dev"),  # Ваш верифицированный домен
+            "to": recipients,
+            "subject": subject,
+            "html": body,
+        }
+        email = resend.Emails.send(params)
+        print(f"Email sent successfully: {email}")
+        return email
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+        raise
+
+
 @user_router.post("/users/register", response_model=schemas.User)
-async def register_user(user: schemas.UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
+async def register_user(
+        user: schemas.UserCreate,
+        background_tasks: BackgroundTasks,
+        db: Session = Depends(database.get_db)
+):
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
-        raise HTTPException(status_code=400, detail="Пользователь с таким email уже зарегистрирован")
+        raise HTTPException(status_code=400, detail="Email уже зарегистрирован")
 
     new_user = crud.create_user(db=db, user=user)
-
     code = crud.create_verification_code(db, new_user)
 
-    message = MessageSchema(
+    # Используем Resend вместо FastMail
+    body = f"""
+    <h2>Добро пожаловать в SODA!</h2>
+    <p>Ваш код подтверждения: <strong>{code}</strong></p>
+    <p>Код действителен в течение 15 минут.</p>
+    """
+
+    await send_email_resend(
         subject="Подтверждение регистрации SODA",
         recipients=[new_user.email],
-        body=f"Ваш код подтверждения: {code}. Он действителен 15 минут.",
-        subtype="plain"
+        body=body
     )
 
-    fm = FastMail(conf_mail)
-    await fm.send_message(message)
-
     background_tasks.add_task(cleanup_unverified_user, new_user.id)
-
     return new_user
 
 
@@ -210,26 +221,32 @@ async def verify_email(verification_data: schemas.EmailVerification, db: Session
     return {"message": "Email успешно подтвержден."}
 
 
-@user_router.post("/users/password-reset/request", summary="Запрос на сброс пароля")
-async def request_password_reset(request_data: schemas.PasswordResetRequest, db: Session = Depends(database.get_db)):
+@user_router.post("/users/password-reset-request", summary="Запрос на сброс пароля")
+async def request_password_reset(
+        request_data: schemas.PasswordResetRequest,
+        db: Session = Depends(database.get_db)
+):
     user = crud.get_user_by_email(db, request_data.email)
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден.")
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
 
     token = crud.create_password_reset_token(db, user)
-    reset_link = f"http://www.soda.contact/reset-password?token={token}"  # Замените на реальный URL
+    reset_link = f"https://www.soda.contact/reset-password?token={token}"
 
-    message = MessageSchema(
+    body = f"""
+    <h2>Сброс пароля SODA</h2>
+    <p>Перейдите по ссылке для сброса пароля:</p>
+    <p><a href="{reset_link}">{reset_link}</a></p>
+    <p>Ссылка действительна в течение ограниченного времени.</p>
+    """
+
+    await send_email_resend(
         subject="Сброс пароля SODA",
         recipients=[user.email],
-        body=f"Для сброса пароля перейдите по ссылке: {reset_link}",
-        subtype="plain"
+        body=body
     )
 
-    fm = FastMail(conf_mail)
-    await fm.send_message(message)
-
-    return {"message": "Инструкции по сбросу пароля отправлены на ваш email."}
+    return {"message": "Письмо с инструкциями отправлено на email."}
 
 
 @user_router.post("/users/password-reset", summary="Подтверждение сброса пароля")
@@ -280,46 +297,41 @@ async def read_users_me(current_user: models.User = Depends(auth.get_current_act
 
 @user_router.post("/users/subscribe", response_model=schemas.SubscriptionOrder, tags=["Users"])
 async def create_subscription(
-    order_data: schemas.SubscriptionOrderCreate,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.get_current_active_user)
+        order_data: schemas.SubscriptionOrderCreate,
+        db: Session = Depends(database.get_db),
+        current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    """Принимает заявку на подписку от пользователя."""
-
-    # 1. Создаем заявку в БД
     order = crud.create_subscription_order(db=db, order=order_data, user_id=current_user.id)
 
-    # 2. Готовим и отправляем письмо администратору (вам)
-    admin_message = MessageSchema(
-        subject=f"Новая заявка на подписку от {current_user.email}",
+    # Письмо администратору
+    admin_body = f"""
+    <h2>Новый заказ подписки</h2>
+    <ul>
+        <li><strong>Клиент:</strong> {order.customer_name}</li>
+        <li><strong>Email:</strong> {current_user.email}</li>
+        <li><strong>Дата:</strong> {order.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")}</li>
+    </ul>
+    """
+
+    await send_email_resend(
+        subject=f"Новая подписка: {current_user.email}",
         recipients=["danyagespi@gmail.com"],
-        body=f"""
-        Поступила новая заявка на подписку:
-        - Имя клиента: {order.customer_name}
-        - Email пользователя: {current_user.email}
-        - Время заявки: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC
-        """,
-        subtype="plain"
+        body=admin_body
     )
 
-    # 3. Готовим и отправляем письмо-подтверждение пользователю
-    user_message = MessageSchema(
-        subject="Ваша заявка на подписку SODA принята",
+    # Письмо пользователю
+    user_body = f"""
+    <h2>Спасибо за подписку!</h2>
+    <p>Здравствуйте, {order.customer_name}!</p>
+    <p>Ваша подписка успешно оформлена.</p>
+    <p>Команда SODA свяжется с вами в ближайшее время.</p>
+    """
+
+    await send_email_resend(
+        subject="Подтверждение подписки SODA",
         recipients=[current_user.email],
-        body=f"""
-        Здравствуйте, {order.customer_name}!
-
-        Спасибо за вашу заявку на подписку. Мы получили ее и свяжемся с вами в течение часа для уточнения деталей.
-
-        С уважением,
-        Команда SODA
-        """,
-        subtype="plain"
+        body=user_body
     )
-
-    fm = FastMail(conf_mail)
-    await fm.send_message(admin_message)
-    await fm.send_message(user_message)
 
     return order
 
