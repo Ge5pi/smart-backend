@@ -223,7 +223,7 @@ async def verify_email(verification_data: schemas.EmailVerification, db: Session
     return {"message": "Email успешно подтвержден."}
 
 
-@user_router.post("/users/password-reset-request", summary="Запрос на сброс пароля")
+@user_router.post("/users/password-reset/request", summary="Запрос на сброс пароля")
 async def request_password_reset(
         request_data: schemas.PasswordResetRequest,
         db: Session = Depends(database.get_db)
