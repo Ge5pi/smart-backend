@@ -721,7 +721,7 @@ def perform_full_analysis(
     step_start = log_step("Генерация визуализаций", step_start)
 
     # Генерация общего резюме
-    def generate_overall_summary(dataframes, insights, joins):
+    def generate_overall_summary(dataframes, insights, joins, language):
         prompt = f"""{get_translation(language, 'overall_summary_instruction')}.
 
         Tables: {list(dataframes.keys())}
