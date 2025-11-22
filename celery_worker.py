@@ -92,21 +92,12 @@ def get_cache_key(connection_string: str, tables: list) -> str:
 @celery_app.task(
     name="run_db_analysis",
     bind=True,
-    priority=5,  # Базовый приоритет
-    rate_limit='10/m',  # Максимум 10 задач в минуту
-    time_limit=1800,  # Таймаут 30 минут
-    soft_time_limit=1500  # Мягкий лимит 25 минут
+    priority=5,
+    rate_limit='10/m',
+    time_limit=1800,
+    soft_time_limit=1500
 )
-def run_db_analysis_task(self, report_id: int, user_id: int, connection_string: str, db_type: str):
-    """
-    Основная задача Celery для анализа базы данных
-
-    Args:
-        report_id: ID отчета в базе данных
-        user_id: ID пользователя
-        connection_string: Строка подключения к БД
-        db_type: Тип базы данных (postgres, sqlserver)
-    """
+def run_db_analysis_task(report_id: int, user_id: int, connection_string: str, db_type: str, language: str = "en"):
     start_time = time.time()
     db = database.SessionLocal()
     engine = None
@@ -114,17 +105,15 @@ def run_db_analysis_task(self, report_id: int, user_id: int, connection_string: 
     try:
         logging.warning(f"Celery-задача запущена для отчета ID: {report_id}, пользователь: {user_id}")
         crud.update_report_status(db, report_id, "processing")
-
-        # Этап 1: Создание подключения к БД с connection pooling
         step_start = time.time()
         engine = create_engine(
             connection_string,
             poolclass=QueuePool,
             pool_size=10,
             max_overflow=20,
-            pool_pre_ping=True,  # Проверка живости соединения
-            pool_recycle=3600,  # Пересоздание через 1 час
-            echo=False  # Отключаем SQL логирование для производительности
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            echo=False
         )
         inspector = inspect(engine)
         tables = inspector.get_table_names()
@@ -135,7 +124,6 @@ def run_db_analysis_task(self, report_id: int, user_id: int, connection_string: 
         logging.info(f"[Отчет {report_id}] Найдено таблиц: {len(tables)}")
         logging.info(f"[Отчет {report_id}] Создание подключения: {time.time() - step_start:.2f}s")
 
-        # Этап 2: Загрузка данных из таблиц с оптимизацией
         step_start = time.time()
         dataframes = {}
         total_rows = 0
@@ -143,13 +131,11 @@ def run_db_analysis_task(self, report_id: int, user_id: int, connection_string: 
 
         for table in tables:
             try:
-                # Получаем информацию о размере таблицы
                 row_count_query = f"SELECT COUNT(*) FROM {table}"
                 row_count = pd.read_sql(row_count_query, con=engine).iloc[0, 0]
 
                 logging.info(f"[Отчет {report_id}] Таблица {table}: {row_count} строк")
 
-                # Для больших таблиц используем chunked чтение
                 if row_count > 100000:
                     logging.info(f"[Отчет {report_id}] Таблица {table} большая, используем chunked чтение")
                     chunks = []
@@ -199,7 +185,7 @@ def run_db_analysis_task(self, report_id: int, user_id: int, connection_string: 
         step_start = time.time()
 
         # Передаем дополнительные параметры для оптимизации
-        analysis_results = perform_full_analysis(inspector, dataframes, report_id)
+        analysis_results = perform_full_analysis(inspector, dataframes, report_id, language=language)
 
         logging.info(f"[Отчет {report_id}] Анализ завершен за {time.time() - step_start:.2f}s")
 

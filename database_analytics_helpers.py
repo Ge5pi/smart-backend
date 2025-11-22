@@ -54,18 +54,39 @@ except ImportError:
     CACHE_TTL_VISUALIZATIONS = 7200
 
 
+TRANSLATIONS = {
+    "en": {
+        "analysis_intro": "Analyze this table",
+        "insight_instruction": "Provide your analysis in English in Markdown format",
+        "correlation_instruction": "Key findings and insights",
+        "join_analysis": "Analyze the joined data",
+        "overall_summary_instruction": "Provide a comprehensive summary in English",
+        "hypothesis_instruction": "Generate 2-3 testable hypotheses with test recommendations in English",
+        "cluster_instruction": "Explain the clustering results in English"
+    },
+    "ru": {
+        "analysis_intro": "Проанализируйте эту таблицу",
+        "insight_instruction": "Предоставьте анализ на русском языке в формате Markdown",
+        "correlation_instruction": "Ключевые выводы и инсайты",
+        "join_analysis": "Проанализируйте объединенные данные",
+        "overall_summary_instruction": "Предоставьте полный обзор на русском языке",
+        "hypothesis_instruction": "Сгенерируйте 2-3 проверяемых гипотезы с рекомендациями по тестированию на русском языке",
+        "cluster_instruction": "Объясните результаты кластеризации на русском языке"
+    }
+}
+
+def get_translation(lang: str, key: str) -> str:
+    """Получить перевод для указанного языка"""
+    return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, "")
+
+
 def get_df_hash(df: pd.DataFrame) -> str:
     """Создает хеш DataFrame для кеширования"""
     df_string = f"{df.shape}:{df.columns.tolist()}:{df.head().to_json()}"
     return hashlib.md5(df_string.encode()).hexdigest()
 
 
-def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Анализирует одну таблицу с использованием GPT и статистических методов.
-    Включает кеширование для повторных запросов.
-    """
-    # Проверяем кеш
+def analyze_single_table(table_name: str, df: pd.DataFrame, language: str = "en") -> Dict[str, Any]:
     if redis_client:
         df_hash = get_df_hash(df)
         cache_key = f"analysis:{table_name}:{df_hash}"
@@ -113,14 +134,13 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
 
     stats = json.dumps(stats_dict, ensure_ascii=False)
 
-    prompt = (
-        f"Проанализируй данные из таблицы '{table_name}'. "
-        f"Строк в таблице: {len(df)}. "
-        f"Вот описательная статистика (выборка): {stats}. "
-        f"Вот матрица корреляций для ключевых числовых полей: {json.dumps(corr)}. "
-        "Твоя задача — выявить ключевые инсайты, скрытые закономерности и аномалии в данных этой таблицы. "
-        "Будь кратким, структурированным и пиши на русском языке, используя Markdown для выделения (`**термин**`)."
-    )
+    prompt = f"""{get_translation(language, 'analysis_intro')} "{table_name}".
+    {get_translation(language, 'correlation_instruction')}: {len(df)} rows.
+    Statistics: {stats}.
+    Correlations: {json.dumps(corr)}.
+
+    {get_translation(language, 'insight_instruction')}.
+    """
 
     try:
         response = client.chat.completions.create(
@@ -144,11 +164,7 @@ def analyze_single_table(table_name: str, df: pd.DataFrame) -> Dict[str, Any]:
     return result
 
 
-def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    """
-    Анализирует связи между таблицами через foreign keys.
-    Оптимизирован для работы с ограниченным количеством связей.
-    """
+def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame], language: str = "en") -> Dict[str, Any]:
     joint_insights = {}
     analyzed_pairs: Set[Tuple[str, str]] = set()
     all_tables = list(dataframes.keys())
@@ -213,8 +229,6 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                         merged_df = merged_df[top_numeric + other_cols]
 
                 join_key = f"{left_table} 🔗 {right_table}"
-
-                # Быстрая статистика без полного analyze_single_table
                 numeric_df = merged_df.select_dtypes(include=np.number)
                 corr = numeric_df.corr().replace({np.nan: None}).to_dict() if not numeric_df.empty else {}
 
@@ -225,15 +239,14 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
                     'right_rows': len(df_right)
                 }
 
-                prompt = (
-                    f"Проанализируй СВЯЗЬ между таблицами '{left_table}' ({basic_stats['left_rows']} строк) "
-                    f"и '{right_table}' ({basic_stats['right_rows']} строк), которые были объединены "
-                    f"по ключам ({left_table}.{','.join(left_on)} = {right_table}.{','.join(right_on)}). "
-                    f"После объединения получилось {basic_stats['merged_rows']} строк. "
-                    f"Ключевые корреляции: {json.dumps(corr)[:500]}. "
-                    "Сосредоточься на поиске инсайтов, которые возникают именно из-за связи двух таблиц. "
-                    "Ответ дай на русском языке, кратко и по делу (2-3 предложения), используя Markdown."
-                )
+                prompt = f"""{get_translation(language, 'join_analysis')} between {left_table} and {right_table}.
+                Left table: {basic_stats['leftrows']} rows
+                Right table: {basic_stats['rightrows']} rows
+                Joined: {basic_stats['mergedrows']} rows.
+                Correlations: {json.dumps(corr)[:500]}.
+
+                {get_translation(language, 'insight_instruction')}.
+                """
 
                 try:
                     response = client.chat.completions.create(
@@ -265,10 +278,6 @@ def analyze_joins(inspector: Inspector, dataframes: Dict[str, pd.DataFrame]) -> 
 def generate_visualizations(
         dataframes: dict[str, pd.DataFrame], report_id: int
 ) -> dict[str, list[str]]:
-    """
-    Генерирует визуализации для таблиц с использованием GPT и matplotlib.
-    Включает кеширование и ограничения на количество графиков.
-    """
     visualizations = {}
     sns.set_theme(style="whitegrid")
 
@@ -660,48 +669,36 @@ def generate_and_test_hypotheses(df: pd.DataFrame, table_name: str) -> List[Dict
 
 
 def perform_full_analysis(
-        inspector: Inspector, dataframes: Dict[str, pd.DataFrame], report_id: int
-) -> Dict[str, Any]:
-    """
-    Выполняет полный анализ базы данных с оптимизациями производительности.
-    Включает параллельную обработку и приоритизацию таблиц.
-    """
+        inspector: Inspector, dataframes: Dict[str, pd.DataFrame], report_id: int, language: str = "en") -> Dict[str, Any]:
     start_time = time.time()
 
-    # Профилирование функции
     def log_step(step_name, step_start):
         duration = time.time() - step_start
         logging.info(f"[Отчет {report_id}] {step_name}: {duration:.2f}s")
         return time.time()
 
-    # Фильтруем только топ-N самых важных таблиц
     table_sizes = {name: len(df) for name, df in dataframes.items()}
     sorted_tables = sorted(table_sizes.items(), key=lambda x: x[1], reverse=True)
-
-    # Анализируем подробно только топ таблиц, остальные - базовый анализ
     priority_tables = [t[0] for t in sorted_tables[:MAX_TABLES_DETAILED_ANALYSIS]]
 
     logging.info(f"Приоритетные таблицы для анализа: {priority_tables}")
 
-    # Параллельный анализ отдельных таблиц
     step_start = time.time()
     single_table_analysis = {}
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_table = {
-            executor.submit(analyze_single_table, table, df): table
+            executor.submit(analyze_single_table, table, df, language=language): table
             for table, df in dataframes.items() if table in priority_tables
         }
 
         for future in future_to_table:
             table = future_to_table[future]
             try:
-                single_table_analysis[table] = future.result(timeout=120)  # 2 минуты на таблицу
+                single_table_analysis[table] = future.result(timeout=120)
             except Exception as e:
                 logging.error(f"Ошибка анализа таблицы {table}: {e}")
                 single_table_analysis[table] = {"insight": "Ошибка анализа", "correlations": {}}
-
-    # Для остальных таблиц - минимальный анализ без GPT
     for table, df in dataframes.items():
         if table not in priority_tables:
             numeric_df = df.select_dtypes(include=np.number)
@@ -725,44 +722,14 @@ def perform_full_analysis(
 
     # Генерация общего резюме
     def generate_overall_summary(dataframes, insights, joins):
-        prompt = f"""
-Ты — аналитик. Сделай строгий обзор БД на русском в Markdown без преамбул и без «если нужно, могу…».
+        prompt = f"""{get_translation(language, 'overall_summary_instruction')}.
 
-Дано:
-- Таблицы: {list(dataframes.keys())}
-- Инсайты: {json.dumps(insights, ensure_ascii=False)[:5000]}
-- Связи: {json.dumps(joins, ensure_ascii=False)[:3000]}
+        Tables: {list(dataframes.keys())}
+        Insights: {json.dumps(insights, ensure_ascii=False)[:5000]}
+        Joins: {json.dumps(joins, ensure_ascii=False)[:3000]}
 
-Структура ответа (ровно эти секции и порядок):
-
-# Общий обзор
-
-## Ключевые тренды
-
-## Связи между таблицами
-
-## Аномалии и выбросы
-
-## Повторяющиеся паттерны
-
-## Риски и ограничения анализа
-
-## Что проверить дополнительно
-
-Правила:
-- Только по данным выше, без выдумок. Привязывай выводы к таблицам/полям/инсайтам.
-- В трендах/связях указывай возможные причины и альтернативы (если есть).
-- В аномалиях — где видно и возможная природа (ошибка/сезонность/редкость).
-- В рисках — конкретные недостатки данных и неоднозначности.
-- В «Что проверить дополнительно» — 3–7 конкретных проверок, без SQL, без просьб/предложений.
-- Тон сухой, аналитический. Без эмодзи, без call-to-action, без «я могу/готов/предлагаю».
-
-Запрещено:
-- Любые сервисные фразы до/после секций, предложения помощи, планы, SQL, шаблоны.
-- Любые выводы, не подтвержденные исходной информацией.
-
-Выход: только Markdown с указанными секциями.
-"""
+        {get_translation(language, 'insight_instruction')}.
+        """
 
         try:
             response = client.chat.completions.create(
@@ -774,7 +741,7 @@ def perform_full_analysis(
             logging.error(f"Ошибка при генерации общего резюме: {e}")
             return "Не удалось сгенерировать общее резюме"
 
-    overall_summary = generate_overall_summary(dataframes, single_table_analysis, joint_table_analysis)
+    overall_summary = generate_overall_summary(dataframes, single_table_analysis, joint_table_analysis, language)
     step_start = log_step("Генерация общего резюме", step_start)
 
     # Генерация и проверка гипотез (только для приоритетных таблиц)

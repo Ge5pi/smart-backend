@@ -23,7 +23,8 @@ async def analyze_database(
         dbType: str = Form(...),
         alias: str = Form(...),
         db: Session = Depends(database.get_db),
-        current_user: models.User = Depends(auth.get_current_active_user)
+        current_user: models.User = Depends(auth.get_current_active_user),
+        language: str = Form("en")
 ):
     if (not current_user.is_active) and current_user.reports_used >= REPORT_LIMIT:
         raise HTTPException(
@@ -45,7 +46,8 @@ async def analyze_database(
         report_id=report.id,
         user_id=current_user.id,
         connection_string=connectionString,
-        db_type=dbType
+        db_type=dbType,
+        language=language
     )
 
     return {"report_id": report.id, "message": "Анализ запущен в фоновом режиме. Отчет будет готов в ближайшее время."}
@@ -104,12 +106,10 @@ async def download_report_pdf(
     try:
         pdf_buffer = generate_pdf_report(report)
 
-        # Проверяем, что PDF buffer не пустой
         pdf_content = pdf_buffer.getvalue()
         if len(pdf_content) == 0:
             raise HTTPException(status_code=500, detail="Сгенерированный PDF файл пустой.")
 
-        # Возвращаем PDF с правильными заголовками
         return Response(
             content=pdf_content,
             media_type="application/pdf",
