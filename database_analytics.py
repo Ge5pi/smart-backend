@@ -43,11 +43,11 @@ async def analyze_database(
 
     crud.increment_usage_counter(db, user=current_user, counter_type='reports')
     run_db_analysis_task.delay(
-        report_id=report.id,
-        user_id=current_user.id,
-        connection_string=connectionString,
-        db_type=dbType,
-        language=language
+        report.id,
+        current_user.id,
+        connectionString,
+        dbType,
+        language
     )
 
     return {"report_id": report.id, "message": "Анализ запущен в фоновом режиме. Отчет будет готов в ближайшее время."}
