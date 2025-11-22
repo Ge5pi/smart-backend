@@ -91,7 +91,6 @@ def get_cache_key(connection_string: str, tables: list) -> str:
 
 @celery_app.task(
     name="run_db_analysis",
-    bind=True,
     priority=5,
     rate_limit='10/m',
     time_limit=1800,
