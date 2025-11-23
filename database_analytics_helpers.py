@@ -714,13 +714,9 @@ def perform_full_analysis(
     # Анализ связей между таблицами
     joint_table_analysis = analyze_joins(inspector, dataframes)
     step_start = log_step("Анализ связей", step_start)
-
-    # Визуализация только для приоритетных таблиц
     priority_dataframes = {k: v for k, v in dataframes.items() if k in priority_tables[:MAX_TABLES_TO_VISUALIZE]}
     visualizations = generate_visualizations(priority_dataframes.copy(), report_id)
     step_start = log_step("Генерация визуализаций", step_start)
-
-    # Генерация общего резюме
     def generate_overall_summary(dataframes, insights, joins, language):
         prompt = f"""{get_translation(language, 'overall_summary_instruction')}.
 
